@@ -120,7 +120,7 @@ fn handle_connection(stream: &mut TcpStream, cfg: &ServeConfig) -> Result<(), St
         return write_json_response(stream, status, &payload);
     }
 
-    // 静态文件服务（供桌面端 WebView 或浏览器预览加载）
+    // 静态文件服务（供桌面端 WebView 或浏览器预览加载；对 index.html 自动注入本机实时数据快照）
     if let Some(ref static_root) = cfg.static_dir {
         let rel = path.trim_start_matches('/');
         let file_rel = if rel.is_empty() { "index.html" } else { rel };
@@ -129,6 +129,24 @@ fn handle_connection(stream: &mut TcpStream, cfg: &ServeConfig) -> Result<(), St
             if candidate.is_file() {
                 if let Ok(bytes) = fs::read(&candidate) {
                     let content_type = guess_content_type(&candidate);
+                    if file_rel == "index.html" {
+                        if let Ok(html_str) = String::from_utf8(bytes.clone()) {
+                            let bootstrap = build_bootstrap_json(cfg);
+                            let script_line = format!(
+                                "window.__AI_GUARD_REAL_DATA__ = {};",
+                                serde_json::to_string(&bootstrap)
+                                    .unwrap_or_else(|_| "{}".to_string())
+                            );
+                            let hydrated =
+                                html_str.replace("/*__AI_GUARD_SERVER_BOOTSTRAP__*/", &script_line);
+                            return write_raw_response(
+                                stream,
+                                200,
+                                content_type,
+                                hydrated.as_bytes(),
+                            );
+                        }
+                    }
                     return write_raw_response(stream, 200, content_type, &bytes);
                 }
             }
@@ -142,6 +160,72 @@ fn handle_connection(stream: &mut TcpStream, cfg: &ServeConfig) -> Result<(), St
     )
 }
 
+fn build_bootstrap_json(cfg: &ServeConfig) -> Value {
+    let status = collect_doctor_report("all", None, cfg.db_path.as_deref());
+    let store = AuditStore::resolve_default(cfg.db_path.as_deref());
+    let events = store
+        .query_events(&EventQueryFilter {
+            target: Some("all".to_string()),
+            decision: None,
+            since_epoch_ms: None,
+            limit: 50,
+        })
+        .unwrap_or_default();
+    let sessions = crate::collect_sessions_readonly("all", None, 100);
+    let bstore = crate::resolve_backup_store(cfg.backup_dir.as_deref());
+    let backups = bstore.list_backups(None).unwrap_or_default();
+    let policies = default_policy_engine().config().clone();
+
+    let wsl_home = crate::resolve_codex_home_for_target("wsl2:Ubuntu", InstallScope::User, None);
+    let wsl_preview = install_codex_hook(
+        &InstallRequest {
+            target_id: "wsl2:Ubuntu".to_string(),
+            scope: InstallScope::User,
+            codex_home: wsl_home,
+            hook_command: "ai-guard hook codex pre-tool-use".to_string(),
+            guard_binary_source: None,
+            guard_binary_dest: None,
+            policy_source: None,
+            policy_dest: None,
+            trusted_hash: None,
+            dry_run: true,
+        },
+        &bstore,
+    )
+    .ok();
+
+    let host_home = crate::resolve_codex_home_for_target("host:windows", InstallScope::User, None);
+    let host_preview = install_codex_hook(
+        &InstallRequest {
+            target_id: "host:windows".to_string(),
+            scope: InstallScope::User,
+            codex_home: host_home,
+            hook_command: "ai-guard.exe hook codex pre-tool-use".to_string(),
+            guard_binary_source: None,
+            guard_binary_dest: None,
+            policy_source: None,
+            policy_dest: None,
+            trusted_hash: None,
+            dry_run: true,
+        },
+        &bstore,
+    )
+    .ok();
+
+    json!({
+        "ok": true,
+        "status": status,
+        "events": events,
+        "sessions": sessions,
+        "backups": backups,
+        "policies": policies,
+        "install_preview": {
+            "wsl": wsl_preview,
+            "host": host_preview,
+        }
+    })
+}
+
 fn route_api_request(
     method: &str,
     path: &str,
@@ -150,6 +234,7 @@ fn route_api_request(
     cfg: &ServeConfig,
 ) -> (u16, Value) {
     match (method, path) {
+        ("GET", "/api/bootstrap") => (200, build_bootstrap_json(cfg)),
         ("GET", "/api/health") => (
             200,
             json!({
