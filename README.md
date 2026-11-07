@@ -82,9 +82,10 @@ AI卫士采用“统一内核 + 协议适配器解耦”的模块化架构，为
 - **增量挂载与配置隔离**：安全纳管 `~/.gemini/config/hooks.json`，支持增量安装与恢复；
 - **原生工件与转录日志只读治理**：纳管 `~/.gemini/antigravity/brain/<conversation-id>/` 会话与产物，支持只读抓取首行会话标题。
 
-### 3. OpenCode & Claude Code（统一扩展架构）
-- **通用抽象接口（`AgentAdapter` Trait）**：为 OpenCode 等新一代开源与商用智能体提供即插即用的接入契约；
-- **跨平台命令语义归一化**：内置 Shell 解析器对 Bash、Zsh、PowerShell、CMD 工具调用做统一语法树语法规约，规则跨 Agent 零重写复用。
+### 3. OpenCode & `opencode` CLI（原生插件 Hook 治理）
+- **原生插件拦截与 Wire Protocol 契约**：严格遵循 OpenCode 插件生命周期规范，通过 `tool.execute.before` 钩子与 `ai-guard-pretool.js` 桥接，标准化拦截 `bash`、`sh`、`write_file`、`edit_file` 等操作，标准退出码 0（放行）/ 1（阻断）并执行 Fail-Closed 安全熔断；
+- **自动化插件注入与恢复**：支持一键向 OpenCode 插件目录纳管挂载 `ai-guard-pretool.js`，卸载时干净移除；
+- **任务会话事件流只读解析**：只读索引 OpenCode `session` 目录，按任务流提取工具调用与代码补丁事件。
 
 ---
 
@@ -217,9 +218,10 @@ AI卫士提供预编译 Windows 标准安装向导包与单可执行文件，开
 # 诊断所有智能体与宿主机/WSL2 环境状态
 ai-guard status --target all --json
 
-# 运行 Codex / AGY 隔离沙箱自检（不触碰真实目录，验证放行与拦截逻辑）
+# 运行 Codex / AGY / OpenCode 隔离沙箱自检（不触碰真实目录，验证放行与拦截逻辑）
 ai-guard self-test codex --target all --isolated --json
 ai-guard self-test agy --isolated --json
+ai-guard self-test opencode --isolated --json
 
 # ----------------- 规则校验与离线模拟 -----------------
 # 校验策略配置文件
@@ -233,12 +235,21 @@ ai-guard rule test --tool Bash --input "cat ~/.ssh/id_rsa" --cwd "/workspace" --
 # 预览安装变更（Dry-Run 不触碰磁盘）
 ai-guard install codex --target wsl2:Ubuntu --dry-run
 
-# 一键挂载防护至指定目标
+# 一键挂载防护至指定目标（Codex、AGY、OpenCode）
 ai-guard install codex --target all
 ai-guard install agy
+ai-guard install opencode
+ai-guard uninstall opencode
+
+# ----------------- 智能体 Hook 接入点 -----------------
+# OpenCode 插件执行前调用（单行 JSON 输入/输出，退出码 0 放行 / 1 阻断）
+ai-guard hook opencode pre-tool-use
+
+# AGY 生命周期钩子调用（ProtoJSON 协议输入/输出）
+ai-guard hook agy pre-tool-use
 
 # ----------------- 会话资产管理与迁移 -----------------
-# 只读列出跨环境会话
+# 只读列出跨环境会话（支持 Codex、AGY、OpenCode）
 ai-guard session list --target all --limit 20
 
 # 备份指定会话（生成含 SHA-256 manifest 的事务快照）
@@ -258,9 +269,10 @@ ai-guard session backup <session_id> --target host:windows
   - [x] SQLite WAL 本地脱敏审计与 15ms 超时降级机制；
   - [x] 会话 100% 只读保护与 SHA-256 事务备份恢复；
   - [x] Google Antigravity (AGY) & `agy` CLI 全链路管控支持；
+  - [x] OpenCode & `opencode` CLI 原生插件（`tool.execute.before`）全链路 Hook 拦截与沙箱自检；
   - [x] 桌面控制台管家式界面与 Windows 系统托盘静默运行支持。
 - **Phase 6A（推进中）**：
-  - [ ] **OpenCode & Claude Code 原生适配**：完成 Hook 协议标准化接入与端到端测试；
+  - [ ] **Claude Code 原生适配**：完成 Hook 协议标准化接入与端到端测试；
   - [ ] **跨智能体会话迁移工具箱（Session Migration CLI）**：支持一键导出、转译并导入至目标智能体；
   - [ ] **OS 内核级沙箱探索**：WSL2 侧基于 Linux Landlock、宿主机侧基于 Windows Job Object 开展深度访问隔离。
 - **Phase 6B（企业版演进）**：
@@ -281,5 +293,6 @@ ai-guard session backup <session_id> --target host:windows
 - `docs/ARCHITECTURE.md`：系统架构设计与分层规范
 - `docs/ROADMAP.md`：多阶段研发规划与里程碑
 - `docs/AGY_HOOK_CONTRACT.md`：Antigravity Lifecycle Hook 通信协议契约
+- `docs/OPENCODE_HOOK_CONTRACT.md`：OpenCode Plugin Hook 通信协议契约与生命周期规范
 - `docs/LIMITATIONS.md`：安全能力边界与防御已知盲区说明
 - `AGENTS.md`：AI 编程协作与架构研发规范
