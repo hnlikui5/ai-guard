@@ -39,6 +39,8 @@ htmlcov/
 # Rust / Tauri
 target/
 **/*.rs.bk
+*.exe
+*.dll
 
 # Local Databases
 *.db
