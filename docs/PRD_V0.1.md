@@ -35,6 +35,20 @@
 6. **补齐 WSL2 Rust 工具链前置门禁**：
    - 在 Phase 0 明确将安装 Rust stable 工具链及锁定 `rust-toolchain.toml` 列为编码前准备事项。
 
+### 1.3 面向 Codex CLI 与 Codex 桌面应用（Codex Desktop）的双形态支持设计
+
+除命令行形态的 `codex-cli` 外，AI卫士在架构与产品规划上明确支持 **Codex 桌面应用（Codex Desktop App）** 的两种运行模式：
+
+1. **模式 A：Codex 桌面应用连接 WSL2 工作区（WSL2 Backend 模式）**
+   - 桌面应用通过 WSL2 内的 `~/.codex/app-server-daemon` 执行命令与文件操作，与 WSL2 内的 `codex-cli` 共享 `~/.codex/` 配置与 Hook 机制。
+   - **关键保障**：在 `doctor` / `install` / `self-test` 中纳入对 `app-server-daemon` 及 `app-server-control` 的状态检测与配置刷新验证，确保桌面应用新建或恢复会话时立即加载最新 Hook。
+2. **模式 B：Codex 桌面应用运行于 Windows 原生环境（Windows Native 模式）**
+   - 桌面应用直接在 Windows 宿主机（`C:\Users\<User>\.codex\`）下运行并调用 `powershell.exe` / `pwsh.exe` / `cmd.exe`。
+   - **关键保障**：
+     - **核心代码跨平台同源编译**：`apps/local-service` 与 `packages/*` 从 Phase 1 起禁用 Linux 专属硬编码，通过 `#![cfg(unix)]` / `#![cfg(windows)]` 隔离文件权限与原子重命名差异，使同一套 Rust 代码既可编译为 WSL2 Linux 二进制 `ai-guard`，也可编译为 Windows 原生二进制 `ai-guard.exe`（避免 Windows 原生 Hook 每次跨 `wsl.exe` 调用的冷启动延迟与引号丢失问题）。
+     - **多执行目标模型（`ExecutionTarget` & `ClientSurface`）**：在领域模型中显式区分 `ClientSurface`（`CodexCli` / `CodexDesktop` / `CodexAppServer`）与 `ExecutionTarget`（`Wsl2Distro` / `WindowsNative`）。
+     - **跨 Shell 与跨路径规则覆盖**：`packages/security` 同步支持 POSIX Shell（`bash`/`sh`）与 Windows Shell（`PowerShell`/`CMD`）的高危命令模式（如 `Remove-Item -Recurse -Force`、`iwr ... | iex`、`powershell -enc`）及 Windows 敏感路径（`%USERPROFILE%\.ssh`、`C:\Users\*\...`）归一化检测。
+
 ---
 
 ## 2. 产品核心原则与安全红线
@@ -62,11 +76,11 @@
 
 | 需求编号 | 所属模块 | 功能名称 | 优先级 | 对应研发阶段 | 核心验收口径 |
 | :--- | :--- | :--- | :---: | :---: | :--- |
-| **FR-001** | `agent-adapters` | Codex 环境与能力探测 | P0 | Phase 0 / 3 | 准确识别 WSL2 发行版、`codex` 路径、版本号、配置文件层及 `app-server-daemon` 状态，不读取 `auth.json` 密钥 |
-| **FR-002** | `agent-adapters` | Codex `PreToolUse` 协议适配 | P0 | Phase 1 | 解析 stdin JSON（上限 1 MiB），支持 `Bash`/`unified_exec`/`apply_patch` 等工具归一化，输出标准 Deny/Allow JSON |
+| **FR-001** | `agent-adapters` | Codex 多形态环境与执行目标探测 | P0 | Phase 0 / 3 | 准确识别 `ExecutionTarget`（WSL2 发行版 `~/.codex` 与 Windows 原生 `C:\Users\<User>\.codex`）、`ClientSurface`（`CodexCli` / `CodexDesktop`）及 `app-server-daemon` 状态，不读取 `auth.json` 密钥 |
+| **FR-002** | `agent-adapters` | Codex `PreToolUse` 协议适配 | P0 | Phase 1 | 解析 stdin JSON（上限 1 MiB），支持 `Bash`/`unified_exec`/`apply_patch`/Windows Shell 等工具归一化，输出标准 Deny/Allow JSON |
 | **FR-003** | `security` | 确定性策略评估引擎 | P0 | Phase 1 / 2 | 支持 `Allow` / `Deny` / `Observe` 三态裁决，遵循 Deny 优先，异常输入默认显式 Deny（Fail-Closed） |
-| **FR-004** | `security` | 高危 Shell 命令拦截规则包 | P0 | Phase 2 | 准确拦截高危递归删除、磁盘破坏、危险赋权及 `curl/wget ... \| sh` 下载执行模式 |
-| **FR-005** | `security` | 敏感凭据与路径越界保护 | P0 | Phase 2 | 拦截对 `~/.ssh`、`~/.aws`、`~/.codex/auth.json`、`.env`、`*.pem` 的直接访问及 `apply_patch` 路径穿越 |
+| **FR-004** | `security` | 跨平台高危 Shell 命令拦截规则包 | P0 | Phase 2 | 准确拦截 Linux（`rm -rf`、`curl \| sh`、`mkfs`）与 Windows PowerShell/CMD（`Remove-Item -Recurse -Force`、`rmdir /s /q`、`iwr \| iex`、`-EncodedCommand`）高危模式 |
+| **FR-005** | `security` | 跨平台敏感凭据与路径越界保护 | P0 | Phase 2 | 拦截对 POSIX 与 Windows 下 `.ssh`、`.aws`、`.codex/auth.json`、`.env`、`*.pem` 的直接访问及 `../` / `..\` 路径穿越 |
 | **FR-006** | `security` | 危险 Git 操作识别规则 | P1 | Phase 2 | 识别 `git reset --hard`、`git clean -fdx`、`git push --force`，支持配置为 Observe 或 Deny |
 | **FR-007** | `security` | 观察模式与保护模式切换 | P0 | Phase 2 | `observe` 模式仅记录命中规则不阻断；`protect` 模式对命中 `deny` 规则返回明确拒绝 |
 | **FR-008** | `local-service` | 离线规则校验与模拟测试 | P0 | Phase 2 | `ai-guard rule validate` 与 `ai-guard rule test` 纯内存重放判定，绝不真实执行被测命令 |
@@ -283,11 +297,17 @@ flowchart LR
 
 ---
 
-### Phase 6（对应 M8 + M9，V0.2+ 演进）：多 Agent 适配、OS 沙箱与企业版控制平面
+### Phase 6（对应 M8 + M9，V0.1.5 ～ V1.0 演进）：Codex 桌面应用原生目标、多 Agent 适配、OS 沙箱与企业版控制平面
 
+- **Phase 5.5（V0.1.5 专项增强：Codex 桌面应用全模式闭环）**：
+  - **WSL2 工作区模式**：在 V0.1（Phase 0 ～ Phase 5）中已随 WSL2 `~/.codex` 与 `app-server-daemon` 刷新检测同步支持。
+  - **Windows 原生执行目标模式（`WindowsNative`）**：
+    1. 将同一套 `apps/local-service` Rust 代码编译为 Windows 原生 `ai-guard.exe`，随 Tauri 桌面安装包一同分发。
+    2. 支持扫描与挂载 Windows 宿主机 `C:\Users\<User>\.codex\` 配置与 Hook（针对 Windows Shell 引号转义做安全参数封装）。
+    3. AI卫士桌面端“Agent 管理页”支持同时纳管并切换查看 **`WSL2 Codex (CLI / Desktop WSL)`** 与 **`Windows Native Codex Desktop`** 两个执行目标的防护状态、风险事件与 Session 备份。
 - **Phase 6A（V0.2 个人版增强）**：
   - 接入 **Claude Code** 与 **OpenCode**（独立实现 `AgentAdapter` 并完成各自真实 Hook E2E 验证）。
   - 完整版跨 Agent Session 搜索、恢复冲突预览与安全恢复。
-  - 引入 **nono / Linux Landlock** 内核级沙箱 PoC，对文件读写白名单与网络外传提供 OS 内核级强制隔离验证。
+  - 引入 **nono / Linux Landlock**（WSL2）及 **Windows Job Object / 受限令牌** 沙箱 PoC，对文件读写白名单与网络外传提供 OS 级强制隔离验证。
 - **Phase 6B（V1.0 企业版，独立私有仓库 `ai-guard-enterprise`）**：
   - 基于 Rust Axum + PostgreSQL 实现设备注册与 mTLS 身份认证、Ed25519 签名策略强制下发（防止终端私自放宽企业基线）、OIDC/RBAC 权限控制与多租户脱敏审计汇聚中心。

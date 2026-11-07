@@ -78,12 +78,18 @@ flowchart TD
 
 ## 4. 关键技术设计机制（已纳入优化点）
 
-### 4.1 适配 `codex-cli 0.160.1+` 真实运行机制
-1. **多工具名与四大 Hook 事件建模**：
+### 4.1 适配 `codex-cli 0.160.1+` 与 Codex 桌面应用（Codex Desktop App）双形态机制
+1. **`ClientSurface` 与 `ExecutionTarget` 解耦建模**：
+   - 在 `packages/agent-adapters` 与 `packages/security` 中显式建模客户端形态 `ClientSurface`（`CodexCli` / `CodexDesktop` / `CodexAppServer`）与执行目标 `ExecutionTarget`（`Wsl2 { distro, codex_home }` / `WindowsNative { codex_home }`）。
+   - 当 Codex 桌面应用工作在 **WSL2 工作区模式** 时，与 WSL2 `codex-cli` 共享 WSL2 内的 `ai-guard` 二进制与 `~/.codex` 配置；当工作在 **Windows 原生模式** 时，直接由同套 Rust 源码编译出的 Windows 原生 `ai-guard.exe` 保护 `C:\Users\<User>\.codex`。
+2. **Rust 核心跨平台同源编译约束**：
+   - `packages/*` 与 `apps/local-service` 严禁将 Linux 专属系统调用硬编码在公共路径中；针对文件权限设置（Unix `0600`/`0700` vs Windows ACL）与原子重命名（POSIX `rename` vs Windows `MoveFileExW`）统一封装在平台抽象层中。
+   - `packages/security` 内置规则同时覆盖 POSIX Shell（`bash`/`sh`）与 Windows Shell（`powershell`/`pwsh`/`cmd`）高危语义及 POSIX/Windows 敏感路径规范化。
+3. **多工具名与四大 Hook 事件建模**：
    - 适配层在架构上建模 `PreToolUse`、`PermissionRequest`、`UserPromptSubmit`、`PostToolUse` 四类事件，V0.1 首期强制激活 `PreToolUse`。
-   - 针对 `codex-cli 0.160.1` 默认启用 `unified_exec` 与 `hooks` 的特性，将 Shell 执行相关的工具名（如 `Bash`、`unified_exec`、`write_stdin` 等，以 Phase 0 实测清单为准）统一归一化为 `ActionKind::Shell` 进行安全检查。
-2. **后台 `app-server-daemon` 感知**：
-   - `ai-guard doctor` 与 `ai-guard install` 检测 `~/.codex/app-server-daemon` 运行状态，确保 Hook 配置变更后通过隔离自检验证最新 Hook 已被当前 Codex 实例加载，防止因旧 Daemon 缓存配置导致的假生效。
+   - 针对 `codex-cli 0.160.1` 及桌面端默认启用 `unified_exec` 与 `hooks` 的特性，将 Shell 执行相关的工具名（如 `Bash`、`unified_exec`、`write_stdin`、Windows Shell 等）统一归一化为 `ActionKind::Shell` 进行安全检查。
+4. **后台 `app-server-daemon` / `app-server-control` 感知**：
+   - Codex 桌面应用与新版 CLI 均依赖后台 `app-server-daemon`；`ai-guard doctor` 与 `ai-guard install` 检测 `~/.codex/app-server-daemon` 与 `app-server-control` 状态，确保 Hook 配置变更后通过隔离自检验证最新 Hook 已被当前实例加载，防止因旧 Daemon 缓存配置导致的假生效。
 
 ### 4.2 Hook 低延迟裁决与 SQLite 无锁降级（防超时 Fail-Open）
 Codex Hook 一旦执行超时，宿主可能按 Fail-Open 继续执行工具。为确保 `ai-guard hook codex pre-tool-use` 端到端 P95 延迟远低于超时阈值：
@@ -92,11 +98,12 @@ Codex Hook 一旦执行超时，宿主可能按 Fail-Open 继续执行工具。�
    - `events.db` 开启 `PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;`，并设置 `busy_timeout = 15ms`。
    - 若 15ms 内无法获取 SQLite 写锁或发生磁盘错误，**绝不阻塞或改变已得出的 `Deny/Allow` 裁决**，立即向 `stdout` 输出协议 JSON，并将脱敏事件追加写入 `~/.local/state/ai-guard/events-fallback.jsonl`，后续由 `ai-guard status / events list` 自动补偿入库。
 
-### 4.3 Windows 桌面端与 WSL2 受限通信架构
-1. Windows 宿主机的 `apps/desktop` 通过 Tauri Rust Command 执行：
-   `wsl.exe --distribution <distro> --exec <absolute-ai-guard-path> <approved-subcommand> --json`
+### 4.3 Windows 桌面端多目标受限桥接架构（`TargetBridge`）
+1. Windows 宿主机的 `apps/desktop` 通过统一的 `TargetBridge` 抽象支持两类执行目标：
+   - **针对 `Wsl2` 执行目标（Codex CLI 及 Codex 桌面端 WSL 模式）**：通过 Tauri Rust Command 执行 `wsl.exe --distribution <distro> --exec <absolute-ai-guard-path> <approved-subcommand> --json`。
+   - **针对 `WindowsNative` 执行目标（Codex 桌面端 Windows 原生模式）**：通过 Tauri Rust Command 直接调用本机受控路径下的 `ai-guard.exe <approved-subcommand> --json`。
 2. 所有参数通过独立 `argv` 数组传递，严禁经过 `bash -c` 或 `cmd /c` 解释，从根源杜绝命令注入。
-3. 当 WSL2 未启动、命令超时或返回非预期结构时，桌面端立即呈现 `unknown`（状态未知），绝不展示缓存的虚假“已验证保护”绿灯。
+3. 当目标环境未启动、命令超时或返回非预期结构时，桌面端立即呈现 `unknown`（状态未知），绝不展示缓存的虚假“已验证保护”绿灯。
 
 ---
 

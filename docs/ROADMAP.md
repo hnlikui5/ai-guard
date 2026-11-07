@@ -40,9 +40,13 @@
 - [ ] **Phase 4B**：迁入原 M1 阶段 Codex Session 成果至 `packages/session`，支持会话只读索引浏览与 SHA-256 安全备份
 
 ### 1.6 Phase 5（M6 + M7）：Windows Tauri 2 中文桌面端与 V0.1 个人版发布
-- [ ] 实现 Windows Tauri 2 到 WSL2 `ai-guard` 的受限白名单 `wsl.exe --exec` 桥接
+- [ ] 实现 Windows Tauri 2 到 WSL2 `ai-guard` 的受限白名单 `wsl.exe --exec` 桥接（同时预留 Windows 原生 `ai-guard.exe` 通道）
 - [ ] 交付六大中文核心管理页面（安全概览、Agent 管理、安全策略、风险事件、防护诊断/安装、设置与隐私）
 - [ ] 完成 `AT-01` ～ `AT-12` 与 `SEC-E2E-001` ～ `SEC-E2E-012` 全量验收及 V0.1 开源合规发布
+
+### 1.7 Phase 5.5（V0.1.5）：Codex 桌面应用（Codex Desktop App）全模式支持
+- [ ] 验证并打通 **Codex 桌面应用 WSL2 工作区模式** 的 `app-server-daemon` Hook 热刷新与拦截闭环
+- [ ] 编译分发 Windows 原生 `ai-guard.exe`，支持 **Codex 桌面应用 Windows 原生模式**（`C:\Users\<User>\.codex`）的 Hook 安装、PowerShell/CMD 高危命令拦截与 Session 统一纳管
 
 ---
 
