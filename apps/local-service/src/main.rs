@@ -32,7 +32,16 @@ use std::time::Instant;
 
 fn main() {
     let cli = Cli::parse();
-    match cli.command {
+    let command = cli.command.unwrap_or_else(|| Commands::Serve {
+        bind: cli.bind.unwrap_or_else(|| "127.0.0.1:17900".to_string()),
+        open: cli.open.unwrap_or(true),
+        static_dir: None,
+        db_path: None,
+        backup_dir: None,
+        policy_path: None,
+        max_requests: None,
+    });
+    match command {
         Commands::Doctor { target, json } => run_doctor(&target, None, None, json),
         Commands::Status {
             target,
@@ -232,6 +241,7 @@ fn main() {
         },
         Commands::Serve {
             bind,
+            open,
             static_dir,
             db_path,
             backup_dir,
@@ -240,6 +250,7 @@ fn main() {
         } => {
             let cfg = http_server::ServeConfig {
                 bind_addr: bind,
+                auto_open: open,
                 static_dir: static_dir.map(PathBuf::from),
                 db_path,
                 backup_dir,

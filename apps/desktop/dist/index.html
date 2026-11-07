@@ -939,6 +939,7 @@
 
   <script>
     /*__AI_GUARD_SERVER_BOOTSTRAP__*/
+    const API_BASE = (window.location && window.location.protocol.startsWith('http')) ? window.location.origin : 'http://127.0.0.1:17900';
 
     const pages = ['overview', 'agents', 'policies', 'events', 'diagnostics', 'settings'];
     const PAGE_TITLES = {
@@ -1196,7 +1197,7 @@
     async function runSelfTest(targetId) {
       showBannerToast('⏳ 正在隔离沙箱中检验正常命令放行与高危命令拦截功能...', false);
       try {
-        const res = await fetch('http://127.0.0.1:17900/api/self-test', {
+        const res = await fetch(API_BASE + '/api/self-test', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ target: targetId })
@@ -1215,8 +1216,8 @@
       box.innerHTML = '正在检查双环境受管启动条件...';
       try {
         const [wslRes, hostRes] = await Promise.all([
-          fetch('http://127.0.0.1:17900/api/preflight', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ target_id: 'wsl2:Ubuntu-24.04' }) }),
-          fetch('http://127.0.0.1:17900/api/preflight', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ target_id: 'host:windows' }) })
+          fetch(API_BASE + '/api/preflight', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ target_id: 'wsl2:Ubuntu-24.04' }) }),
+          fetch(API_BASE + '/api/preflight', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ target_id: 'host:windows' }) })
         ]);
         const wslPf = await wslRes.json();
         const hostPf = await hostRes.json();
@@ -1285,7 +1286,7 @@
       showBannerToast('⏳ 正在为 <strong>' + label + '</strong> ' + (enable ? '自动备份原配置并开启实时防护...' : '关闭防护并还原原始配置...'), false);
 
       try {
-        const endpoint = enable ? 'http://127.0.0.1:17900/api/install' : 'http://127.0.0.1:17900/api/uninstall';
+        const endpoint = enable ? API_BASE + '/api/install' : API_BASE + '/api/uninstall';
         const res = await fetch(endpoint, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -1463,7 +1464,7 @@
     async function backupSession(targetId, sessionId) {
       showBannerToast('⏳ 正在为对话 <code>' + sessionId + '</code> 创建 SHA-256 安全备份...', false);
       try {
-        const res = await fetch('http://127.0.0.1:17900/api/sessions/backup', {
+        const res = await fetch(API_BASE + '/api/sessions/backup', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ target_id: targetId, session_id: sessionId })
@@ -1511,7 +1512,7 @@
     async function restoreBackup(backupId) {
       if (!window.confirm('确认要从备份快照 [' + backupId + '] 还原文件吗？')) return;
       try {
-        const res = await fetch('http://127.0.0.1:17900/api/backups/restore', {
+        const res = await fetch(API_BASE + '/api/backups/restore', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ backup_id: backupId })
@@ -1548,7 +1549,7 @@
       const box = document.getElementById('test-result-box');
       box.innerHTML = '正在分析命令安全性...';
       try {
-        const res = await fetch('http://127.0.0.1:17900/api/rule/test', {
+        const res = await fetch(API_BASE + '/api/rule/test', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ tool, input: cmd, cwd })
@@ -1586,7 +1587,7 @@
 
     async function refreshFromServer() {
       try {
-        const res = await fetch('http://127.0.0.1:17900/api/bootstrap');
+        const res = await fetch(API_BASE + '/api/bootstrap');
         const data = await res.json();
         renderAll(data);
         document.getElementById('conn-status').textContent = '● 本机数据已实时同步';

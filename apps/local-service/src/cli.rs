@@ -8,7 +8,15 @@ use clap::{Parser, Subcommand};
 )]
 pub struct Cli {
     #[command(subcommand)]
-    pub command: Commands,
+    pub command: Option<Commands>,
+
+    /// 本地回路监听地址（直接运行且未指定子命令时生效，默认 127.0.0.1:17900）
+    #[arg(long)]
+    pub bind: Option<String>,
+
+    /// 是否在启动后自动打开系统默认浏览器（直接运行且未指定子命令时生效，默认 true）
+    #[arg(long)]
+    pub open: Option<bool>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -103,7 +111,11 @@ pub enum Commands {
         #[arg(long, default_value = "127.0.0.1:17900")]
         bind: String,
 
-        /// 静态前端资源目录（可选，如 apps/desktop/dist）
+        /// 是否在启动后自动打开系统默认浏览器
+        #[arg(long, default_value_t = true)]
+        open: bool,
+
+        /// 静态前端资源目录（可选，如 apps/desktop/dist；未指定时自动使用内置独立控制台）
         #[arg(long)]
         static_dir: Option<String>,
 

@@ -28,13 +28,36 @@ use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+const EMBEDDED_INDEX_HTML: &str = include_str!("../../../apps/desktop/dist/index.html");
+
 #[derive(Debug, Clone)]
 pub struct ServeConfig {
     pub bind_addr: String,
+    pub auto_open: bool,
     pub static_dir: Option<PathBuf>,
     pub db_path: Option<String>,
     pub backup_dir: Option<String>,
     pub policy_path: Option<String>,
+}
+
+/// 自动在系统默认浏览器中打开控制台界面
+pub fn try_open_browser(url: &str) {
+    #[cfg(target_os = "windows")]
+    {
+        let _ = std::process::Command::new("cmd")
+            .args(["/C", "start", "", url])
+            .spawn();
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        if std::path::Path::new("/proc/sys/fs/binfmt_misc/WSLInterop").exists() {
+            let _ = std::process::Command::new("powershell.exe")
+                .args(["-NoProfile", "-NonInteractive", "-Command", &format!("Start-Process '{url}'")])
+                .spawn();
+        } else {
+            let _ = std::process::Command::new("xdg-open").arg(url).spawn();
+        }
+    }
 }
 
 /// 启动本地回路 HTTP JSON 服务（多线程并发处理浏览器请求 + 3s 空闲读超时保护，防止浏览器预连接阻塞）。
@@ -48,6 +71,9 @@ pub fn run_http_server(
 
     if max_requests_for_test.is_none() {
         println!("AI卫士本地控制服务已启动: http://{sock_addr} (严格限制本地回路访问)");
+        if cfg.auto_open {
+            try_open_browser(&format!("http://{sock_addr}"));
+        }
     }
 
     for (handled, stream_res) in listener.incoming().enumerate() {
@@ -121,24 +147,17 @@ fn handle_connection(stream: &mut TcpStream, cfg: &ServeConfig) -> Result<(), St
     }
 
     // 静态文件服务（供桌面端 WebView 或浏览器预览加载；对 index.html 自动注入本机实时数据快照）
-    if let Some(ref static_root) = cfg.static_dir {
-        let rel = path.trim_start_matches('/');
-        let file_rel = if rel.is_empty() { "index.html" } else { rel };
-        if !file_rel.contains("..") {
+    let rel = path.trim_start_matches('/');
+    let file_rel = if rel.is_empty() { "index.html" } else { rel };
+    if !file_rel.contains("..") {
+        if let Some(ref static_root) = cfg.static_dir {
             let candidate = static_root.join(file_rel);
             if candidate.is_file() {
                 if let Ok(bytes) = fs::read(&candidate) {
                     let content_type = guess_content_type(&candidate);
                     if file_rel == "index.html" {
-                        if let Ok(html_str) = String::from_utf8(bytes.clone()) {
-                            let bootstrap = build_bootstrap_json(cfg);
-                            let script_line = format!(
-                                "window.__AI_GUARD_REAL_DATA__ = {};",
-                                serde_json::to_string(&bootstrap)
-                                    .unwrap_or_else(|_| "{}".to_string())
-                            );
-                            let hydrated =
-                                html_str.replace("/*__AI_GUARD_SERVER_BOOTSTRAP__*/", &script_line);
+                        if let Ok(html_str) = std::str::from_utf8(&bytes) {
+                            let hydrated = hydrate_html_with_bootstrap(html_str, cfg);
                             return write_raw_response(
                                 stream,
                                 200,
@@ -151,6 +170,12 @@ fn handle_connection(stream: &mut TcpStream, cfg: &ServeConfig) -> Result<(), St
                 }
             }
         }
+
+        // 当未提供 static_dir 或指定文件不存在时，对根路径或 index.html 回退使用内置独立 HTML
+        if file_rel == "index.html" {
+            let hydrated = hydrate_html_with_bootstrap(EMBEDDED_INDEX_HTML, cfg);
+            return write_raw_response(stream, 200, "text/html; charset=utf-8", hydrated.as_bytes());
+        }
     }
 
     write_json_response(
@@ -158,6 +183,15 @@ fn handle_connection(stream: &mut TcpStream, cfg: &ServeConfig) -> Result<(), St
         404,
         &json!({ "ok": false, "error_code": "AG-HTTP-404", "error": "Not Found" }),
     )
+}
+
+fn hydrate_html_with_bootstrap(html_str: &str, cfg: &ServeConfig) -> String {
+    let bootstrap = build_bootstrap_json(cfg);
+    let script_line = format!(
+        "window.__AI_GUARD_REAL_DATA__ = {};",
+        serde_json::to_string(&bootstrap).unwrap_or_else(|_| "{}".to_string())
+    );
+    html_str.replace("/*__AI_GUARD_SERVER_BOOTSTRAP__*/", &script_line)
 }
 
 fn build_bootstrap_json(cfg: &ServeConfig) -> Value {
