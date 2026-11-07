@@ -24,6 +24,43 @@ pub enum Commands {
         json: bool,
     },
 
+    /// 查询双环境四态防护状态汇总（protected_verified / partially_protected / unprotected / unknown）
+    Status {
+        /// 目标环境过滤：all | host | wsl2:<distro>
+        #[arg(long, default_value = "all")]
+        target: String,
+
+        /// 显式指定目标 .codex 目录路径（可选）
+        #[arg(long)]
+        codex_home: Option<String>,
+
+        /// 显式指定审计数据库路径（可选）
+        #[arg(long)]
+        db_path: Option<String>,
+
+        /// 以 JSON 格式输出四态状态汇总
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// 在隔离临时沙箱中执行 Allow/Deny 端到端自检并记录证据（绝不触碰真实 ~/.codex）
+    SelfTest {
+        #[command(subcommand)]
+        agent: SelfTestAgents,
+    },
+
+    /// 查询、跨环境拉取或导出二次脱敏后的安全审计事件
+    Events {
+        #[command(subcommand)]
+        subcommand: EventsSubcommands,
+    },
+
+    /// 宿主机与 WSL2 双环境 Codex 会话严格只读索引与 SHA-256 快照备份
+    Session {
+        #[command(subcommand)]
+        subcommand: SessionSubcommands,
+    },
+
     /// 离线校验策略语法或模拟规则裁决（绝不真实执行任何被测命令）
     Rule {
         #[command(subcommand)]
@@ -58,6 +95,174 @@ pub enum Commands {
     Hook {
         #[command(subcommand)]
         agent: HookAgents,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum SelfTestAgents {
+    /// 执行 Codex PreToolUse 隔离自检
+    Codex {
+        /// 目标环境标识：all | host:windows | wsl2:Ubuntu
+        #[arg(long, default_value = "all")]
+        target: String,
+
+        /// 在隔离沙箱目录中运行自检（默认开启）
+        #[arg(long, default_value_t = true)]
+        isolated: bool,
+
+        /// 显式指定审计数据库路径
+        #[arg(long)]
+        db_path: Option<String>,
+
+        /// 以 JSON 格式输出自检报告
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum EventsSubcommands {
+    /// 分页查询并过滤脱敏安全审计事件
+    List {
+        /// 目标环境过滤：all | host | wsl2:<distro>
+        #[arg(long, default_value = "all")]
+        target: String,
+
+        /// 按裁决结果过滤：deny | allow | observe
+        #[arg(long)]
+        decision: Option<String>,
+
+        /// 起始时间戳（毫秒）或相对时长（如 24h / 60m）
+        #[arg(long)]
+        since: Option<String>,
+
+        /// 最大返回条数
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+
+        /// 显式指定审计数据库路径
+        #[arg(long)]
+        db_path: Option<String>,
+
+        /// 以 JSON 格式输出
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// 按游标拉取增量审计事件（供宿主机主控从 WSL2 缓冲库同步归并）
+    Pull {
+        /// 起始毫秒时间戳游标
+        #[arg(long, default_value_t = 0)]
+        since: u64,
+
+        /// 目标环境过滤（可选）
+        #[arg(long)]
+        target: Option<String>,
+
+        /// 单次拉取最大条数
+        #[arg(long, default_value_t = 500)]
+        limit: usize,
+
+        /// 源审计库路径（如 WSL2 缓冲库）
+        #[arg(long)]
+        db_path: Option<String>,
+
+        /// 可选：直接将拉取到的事件幂等合入指定的宿主机主库路径
+        #[arg(long)]
+        merge_into_db: Option<String>,
+
+        /// 以 JSON 格式输出
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// 导出二次强制脱敏后的审计报告（支持 JSON 与 CSV）
+    Export {
+        /// 导出文件输出路径
+        #[arg(long)]
+        output: String,
+
+        /// 强制启用二次脱敏校验（默认开启）
+        #[arg(long, default_value_t = true)]
+        redacted: bool,
+
+        /// 导出格式：json | csv
+        #[arg(long, default_value = "json")]
+        format: String,
+
+        /// 目标环境过滤：all | host | wsl2:<distro>
+        #[arg(long, default_value = "all")]
+        target: String,
+
+        /// 显式指定审计数据库路径
+        #[arg(long)]
+        db_path: Option<String>,
+
+        /// 以 JSON 格式输出导出结果摘要
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum SessionSubcommands {
+    /// 只读列出宿主机与 WSL2 下的 Codex 会话索引
+    List {
+        /// 目标环境过滤：all | host | wsl2:<distro>
+        #[arg(long, default_value = "all")]
+        target: String,
+
+        /// 显式指定 .codex 目录路径（可选）
+        #[arg(long)]
+        codex_home: Option<String>,
+
+        /// 每个目标环境最多返回条数
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+
+        /// 以 JSON 格式输出
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// 只读查看指定 Codex 会话详情
+    Show {
+        /// 会话 ID（支持完整 UUID 或前缀匹配）
+        id: String,
+
+        /// 目标环境：host:windows | wsl2:Ubuntu
+        #[arg(long, default_value = "wsl2:Ubuntu")]
+        target: String,
+
+        /// 显式指定 .codex 目录路径（可选）
+        #[arg(long)]
+        codex_home: Option<String>,
+
+        /// 以 JSON 格式输出
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// 对指定 Codex 会话创建带 SHA-256 校验的快照备份（源目录 100% 只读零修改）
+    Backup {
+        /// 会话 ID（支持完整 UUID 或前缀匹配）
+        id: String,
+
+        /// 目标环境：host:windows | wsl2:Ubuntu
+        #[arg(long, default_value = "wsl2:Ubuntu")]
+        target: String,
+
+        /// 显式指定 .codex 目录路径（可选）
+        #[arg(long)]
+        codex_home: Option<String>,
+
+        /// 显式指定备份仓库根目录（可选）
+        #[arg(long)]
+        backup_dir: Option<String>,
+
+        /// 以 JSON 格式输出
+        #[arg(long)]
+        json: bool,
     },
 }
 
