@@ -6,6 +6,15 @@
 //! - 当输入为空、超长、非合法 UTF-8、JSON 语法错误或缺失必填字段时，不发生 panic，
 //!   直接生成显式 Fail-Closed `Deny` 决策并序列化为合法的单行 Codex `PreToolUse` JSON。
 
+pub mod installer;
+
+pub use installer::{
+    compute_unified_diff, inspect_toml_hooks, install_codex_hook, preflight_codex_run,
+    render_managed_toml_block, strip_managed_toml_block, uninstall_codex_hook, InstallReport,
+    InstallRequest, InstallScope, InstallerError, PreflightCheckItem, PreflightReport,
+    PreflightRequest, UninstallReport, UninstallRequest,
+};
+
 use ai_guard_security::{
     default_policy_engine, redact_secrets, ActionEvent, ActionKind, ClientSurface, Decision,
     Enforcement, EnvironmentKind, PolicyEngine, SecurityError,

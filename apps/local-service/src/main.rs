@@ -1,18 +1,25 @@
 mod cli;
 
 use ai_guard_agent_adapters::{
-    extract_apply_patch_paths, handle_codex_pre_tool_use_bytes_with_engine,
-    parse_codex_pre_tool_use_bytes, CodexPreToolUseWireOutput, MAX_HOOK_STDIN_BYTES,
+    extract_apply_patch_paths, handle_codex_pre_tool_use_bytes_with_engine, install_codex_hook,
+    parse_codex_pre_tool_use_bytes, preflight_codex_run, uninstall_codex_hook,
+    CodexPreToolUseWireOutput, InstallRequest, InstallScope, PreflightRequest, UninstallRequest,
+    MAX_HOOK_STDIN_BYTES,
 };
+use ai_guard_backup::BackupStore;
 use ai_guard_security::{
     default_policy_engine, redact_secrets, ActionEvent, ActionKind, ClientSurface, Decision,
     EnvironmentKind, PolicyEngine, SecurityError,
 };
 use clap::Parser;
-use cli::{Cli, CodexHookEvents, Commands, HookAgents, RuleSubcommands};
+use cli::{
+    BackupSubcommands, Cli, CodexHookEvents, Commands, HookAgents, InstallAgents, RuleSubcommands,
+    RunAgents, UninstallAgents,
+};
 use serde::Serialize;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::Instant;
 
 fn main() {
@@ -38,6 +45,94 @@ fn main() {
                 policy.as_deref(),
                 json,
             ),
+        },
+        Commands::Install { agent } => match agent {
+            InstallAgents::Codex {
+                target,
+                scope,
+                codex_home,
+                backup_dir,
+                hook_command,
+                binary_source,
+                binary_dest,
+                policy_source,
+                policy_dest,
+                trusted_hash,
+                dry_run,
+                json,
+            } => run_install_codex(
+                &target,
+                &scope,
+                codex_home.as_deref(),
+                backup_dir.as_deref(),
+                hook_command.as_deref(),
+                binary_source.as_deref(),
+                binary_dest.as_deref(),
+                policy_source.as_deref(),
+                policy_dest.as_deref(),
+                trusted_hash,
+                dry_run,
+                json,
+            ),
+        },
+        Commands::Uninstall { agent } => match agent {
+            UninstallAgents::Codex {
+                target,
+                scope,
+                codex_home,
+                backup_dir,
+                dry_run,
+                force,
+                json,
+            } => run_uninstall_codex(
+                &target,
+                &scope,
+                codex_home.as_deref(),
+                backup_dir.as_deref(),
+                dry_run,
+                force,
+                json,
+            ),
+        },
+        Commands::Run { agent } => match agent {
+            RunAgents::Codex {
+                target,
+                codex_home,
+                codex_bin,
+                policy,
+                expected_policy_sha256,
+                require_trusted,
+                dry_run,
+                json,
+                codex_args,
+            } => run_managed_codex(
+                &target,
+                codex_home.as_deref(),
+                &codex_bin,
+                policy.as_deref(),
+                expected_policy_sha256,
+                require_trusted,
+                dry_run,
+                json,
+                &codex_args,
+            ),
+        },
+        Commands::Backup { subcommand } => match subcommand {
+            BackupSubcommands::List {
+                target,
+                backup_dir,
+                json,
+            } => run_backup_list(&target, backup_dir.as_deref(), json),
+            BackupSubcommands::Verify {
+                id,
+                backup_dir,
+                json,
+            } => run_backup_verify(&id, backup_dir.as_deref(), json),
+            BackupSubcommands::Restore {
+                id,
+                backup_dir,
+                json,
+            } => run_backup_restore(&id, backup_dir.as_deref(), json),
         },
         Commands::Hook { agent } => match agent {
             HookAgents::Codex { event } => match event {
@@ -180,6 +275,394 @@ fn discover_windows_host_codex_home() -> Option<PathBuf> {
         }
     }
     fallback
+}
+
+fn resolve_codex_home_for_target(
+    target_id: &str,
+    scope: InstallScope,
+    explicit_codex_home: Option<&str>,
+) -> PathBuf {
+    if let Some(p) = explicit_codex_home {
+        return PathBuf::from(p);
+    }
+    if scope == InstallScope::Project {
+        return std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(".codex");
+    }
+    if target_id.starts_with("host") {
+        if let Some(win) = discover_windows_host_codex_home() {
+            return win;
+        }
+    }
+    std::env::var("CODEX_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            let home = std::env::var("HOME").unwrap_or_else(|_| "/home/ai-li".to_string());
+            PathBuf::from(home).join(".codex")
+        })
+}
+
+fn resolve_backup_store(explicit_backup_dir: Option<&str>) -> BackupStore {
+    let dir = if let Some(p) = explicit_backup_dir {
+        PathBuf::from(p)
+    } else if let Ok(env_dir) = std::env::var("AI_GUARD_BACKUP_DIR") {
+        PathBuf::from(env_dir)
+    } else if cfg!(windows) {
+        let local_app_data =
+            std::env::var("LOCALAPPDATA").unwrap_or_else(|_| "C:\\Temp".to_string());
+        PathBuf::from(local_app_data)
+            .join("ai-guard")
+            .join("backups")
+    } else {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+        PathBuf::from(home)
+            .join(".local")
+            .join("share")
+            .join("ai-guard")
+            .join("backups")
+    };
+    BackupStore::new(dir)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_install_codex(
+    target: &str,
+    scope_str: &str,
+    explicit_codex_home: Option<&str>,
+    explicit_backup_dir: Option<&str>,
+    explicit_hook_cmd: Option<&str>,
+    binary_source: Option<&str>,
+    binary_dest: Option<&str>,
+    policy_source: Option<&str>,
+    policy_dest: Option<&str>,
+    trusted_hash: Option<String>,
+    dry_run: bool,
+    as_json: bool,
+) {
+    let scope = match InstallScope::parse(scope_str) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("ERROR [{}]: {e}", e.code());
+            std::process::exit(1);
+        }
+    };
+
+    let codex_home = resolve_codex_home_for_target(target, scope, explicit_codex_home);
+    let backup_store = resolve_backup_store(explicit_backup_dir);
+
+    let default_bin = binary_dest
+        .map(PathBuf::from)
+        .or_else(|| std::env::current_exe().ok())
+        .unwrap_or_else(|| PathBuf::from("ai-guard"));
+
+    let hook_command = if let Some(cmd) = explicit_hook_cmd {
+        cmd.to_string()
+    } else if let Some(p_dest) = policy_dest {
+        format!(
+            "{} hook codex pre-tool-use --policy {}",
+            default_bin.display(),
+            p_dest
+        )
+    } else {
+        format!("{} hook codex pre-tool-use", default_bin.display())
+    };
+
+    let req = InstallRequest {
+        target_id: target.to_string(),
+        scope,
+        codex_home,
+        hook_command,
+        guard_binary_source: binary_source.map(PathBuf::from),
+        guard_binary_dest: binary_dest.map(PathBuf::from),
+        policy_source: policy_source.map(PathBuf::from),
+        policy_dest: policy_dest.map(PathBuf::from),
+        trusted_hash,
+        dry_run,
+    };
+
+    match install_codex_hook(&req, &backup_store) {
+        Ok(report) => {
+            if as_json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".to_string())
+                );
+            } else {
+                println!(
+                    "OK: Codex Hook {}成功 (target={}, config={}, preserved_third_party_hooks={}, backup_id={:?})",
+                    if report.dry_run { "预览(--dry-run)" } else { "安装" },
+                    report.target_id,
+                    report.config_toml_path,
+                    report.third_party_hooks_preserved,
+                    report.backup_id
+                );
+                println!("{}", report.unified_diff);
+                println!("提示: {}", report.trust_guidance);
+            }
+        }
+        Err(err) => {
+            if as_json {
+                let err_json = serde_json::json!({
+                    "ok": false,
+                    "error_code": err.code(),
+                    "error_detail": err.to_string(),
+                });
+                println!("{}", serde_json::to_string_pretty(&err_json).unwrap());
+            } else {
+                eprintln!("ERROR [{}]: {err}", err.code());
+            }
+            std::process::exit(1);
+        }
+    }
+}
+
+fn run_uninstall_codex(
+    target: &str,
+    scope_str: &str,
+    explicit_codex_home: Option<&str>,
+    explicit_backup_dir: Option<&str>,
+    dry_run: bool,
+    force: bool,
+    as_json: bool,
+) {
+    let scope = match InstallScope::parse(scope_str) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("ERROR [{}]: {e}", e.code());
+            std::process::exit(1);
+        }
+    };
+
+    let codex_home = resolve_codex_home_for_target(target, scope, explicit_codex_home);
+    let backup_store = resolve_backup_store(explicit_backup_dir);
+
+    let req = UninstallRequest {
+        target_id: target.to_string(),
+        scope,
+        codex_home,
+        dry_run,
+        force,
+    };
+
+    match uninstall_codex_hook(&req, &backup_store) {
+        Ok(report) => {
+            if as_json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".to_string())
+                );
+            } else {
+                println!(
+                    "OK: Codex Hook {}完成 (target={}, removed={}, remaining_third_party_hooks={}, exact_pre_install_hash={})",
+                    if report.dry_run { "卸载预览(--dry-run)" } else { "安全卸载" },
+                    report.target_id,
+                    report.removed_ai_guard_hook,
+                    report.third_party_hooks_remaining,
+                    report.restored_to_exact_pre_install_hash
+                );
+                println!("{}", report.unified_diff);
+            }
+        }
+        Err(err) => {
+            if as_json {
+                let err_json = serde_json::json!({
+                    "ok": false,
+                    "error_code": err.code(),
+                    "error_detail": err.to_string(),
+                });
+                println!("{}", serde_json::to_string_pretty(&err_json).unwrap());
+            } else {
+                eprintln!("ERROR [{}]: {err}", err.code());
+            }
+            std::process::exit(1);
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_managed_codex(
+    target: &str,
+    explicit_codex_home: Option<&str>,
+    codex_bin: &str,
+    policy_path: Option<&str>,
+    expected_policy_sha256: Option<String>,
+    require_trusted: bool,
+    dry_run: bool,
+    as_json: bool,
+    codex_args: &[String],
+) {
+    let codex_home = resolve_codex_home_for_target(target, InstallScope::User, explicit_codex_home);
+    let req = PreflightRequest {
+        target_id: target.to_string(),
+        codex_home,
+        codex_bin: PathBuf::from(codex_bin),
+        policy_path: policy_path.map(PathBuf::from),
+        expected_policy_sha256,
+        require_trusted,
+    };
+
+    let report = preflight_codex_run(&req);
+    if !report.overall_passed {
+        if as_json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".to_string())
+            );
+        } else {
+            eprintln!(
+                "[AI卫士安全阻断] 受管启动预检未通过（原因码: {}），已拒绝启动 Codex：",
+                report.blocked_reason_code.as_deref().unwrap_or("UNKNOWN")
+            );
+            for c in &report.checks {
+                let status = if c.passed { "PASS" } else { "FAIL" };
+                eprintln!("  - [{}] {}: {}", status, c.check_id, c.detail);
+                if let Some(ref rem) = c.remediation {
+                    eprintln!("    修复指引: {rem}");
+                }
+            }
+        }
+        std::process::exit(1);
+    }
+
+    if dry_run {
+        if as_json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".to_string())
+            );
+        } else {
+            println!(
+                "OK: 受管启动预检全部通过 (target={}, codex_home={})",
+                report.target_id, report.codex_home
+            );
+        }
+        return;
+    }
+
+    // 预检全部通过：使用独立 argv 数组直接拉起目标 codex，严禁通过 Shell 字符串拼接执行！
+    let status = Command::new(&req.codex_bin)
+        .args(codex_args)
+        .env("CODEX_HOME", &req.codex_home)
+        .status();
+
+    match status {
+        Ok(s) => std::process::exit(s.code().unwrap_or(0)),
+        Err(e) => {
+            eprintln!(
+                "[AI卫士安全阻断] 启动 Codex 进程 `{}` 失败: {e}",
+                req.codex_bin.display()
+            );
+            std::process::exit(1);
+        }
+    }
+}
+
+fn run_backup_list(target_filter: &str, explicit_backup_dir: Option<&str>, as_json: bool) {
+    let store = resolve_backup_store(explicit_backup_dir);
+    match store.list_backups(Some(target_filter)) {
+        Ok(list) => {
+            if as_json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&list).unwrap_or_else(|_| "[]".to_string())
+                );
+            } else {
+                println!(
+                    "共找到 {} 条备份记录 (root={}):",
+                    list.len(),
+                    store.root_dir().display()
+                );
+                for m in &list {
+                    println!(
+                        "- [{}] target={} op={} files={}",
+                        m.backup_id,
+                        m.target_id,
+                        m.operation,
+                        m.files.len()
+                    );
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!("ERROR [{}]: {e}", e.code());
+            std::process::exit(1);
+        }
+    }
+}
+
+fn run_backup_verify(backup_id: &str, explicit_backup_dir: Option<&str>, as_json: bool) {
+    let store = resolve_backup_store(explicit_backup_dir);
+    match store.verify_backup(backup_id) {
+        Ok(m) => {
+            if as_json {
+                let out = serde_json::json!({
+                    "valid": true,
+                    "backup_id": m.backup_id,
+                    "target_id": m.target_id,
+                    "files": m.files,
+                });
+                println!("{}", serde_json::to_string_pretty(&out).unwrap());
+            } else {
+                println!(
+                    "OK: 备份 `{}` SHA-256 完整性校验通过（共 {} 个文件）",
+                    m.backup_id,
+                    m.files.len()
+                );
+            }
+        }
+        Err(e) => {
+            if as_json {
+                let out = serde_json::json!({
+                    "valid": false,
+                    "backup_id": backup_id,
+                    "error_code": e.code(),
+                    "error_detail": e.to_string(),
+                });
+                println!("{}", serde_json::to_string_pretty(&out).unwrap());
+            } else {
+                eprintln!("ERROR [{}]: {e}", e.code());
+            }
+            std::process::exit(1);
+        }
+    }
+}
+
+fn run_backup_restore(backup_id: &str, explicit_backup_dir: Option<&str>, as_json: bool) {
+    let store = resolve_backup_store(explicit_backup_dir);
+    match store.restore_backup(backup_id) {
+        Ok(m) => {
+            if as_json {
+                let out = serde_json::json!({
+                    "restored": true,
+                    "backup_id": m.backup_id,
+                    "target_id": m.target_id,
+                    "files": m.files,
+                });
+                println!("{}", serde_json::to_string_pretty(&out).unwrap());
+            } else {
+                println!(
+                    "OK: 已从备份 `{}` 原子恢复 {} 个文件并完成 SHA-256 校验",
+                    m.backup_id,
+                    m.files.len()
+                );
+            }
+        }
+        Err(e) => {
+            if as_json {
+                let out = serde_json::json!({
+                    "restored": false,
+                    "backup_id": backup_id,
+                    "error_code": e.code(),
+                    "error_detail": e.to_string(),
+                });
+                println!("{}", serde_json::to_string_pretty(&out).unwrap());
+            } else {
+                eprintln!("ERROR [{}]: {e}", e.code());
+            }
+            std::process::exit(1);
+        }
+    }
 }
 
 fn inspect_codex_target(

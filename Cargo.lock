@@ -30,10 +30,12 @@ dependencies = [
 name = "ai-guard-agent-adapters"
 version = "0.1.0"
 dependencies = [
+ "ai-guard-backup",
  "ai-guard-security",
  "serde",
  "serde_json",
  "thiserror",
+ "toml",
 ]
 
 [[package]]

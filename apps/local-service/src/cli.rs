@@ -30,10 +30,212 @@ pub enum Commands {
         subcommand: RuleSubcommands,
     },
 
+    /// 无损安装或预览 Agent 安全防护钩子（强制先备份，保留已有配置与第三方 Hook）
+    Install {
+        #[command(subcommand)]
+        agent: InstallAgents,
+    },
+
+    /// 安全卸载 Agent 安全防护钩子（仅移除 AI卫士受管段落，带外部修改冲突保护）
+    Uninstall {
+        #[command(subcommand)]
+        agent: UninstallAgents,
+    },
+
+    /// 受管安全启动 Agent（先执行 4 项安全预检，失败即 Fail-Closed 拒绝启动）
+    Run {
+        #[command(subcommand)]
+        agent: RunAgents,
+    },
+
+    /// 管理 SHA-256 事务备份（列表、完整性校验、原子恢复）
+    Backup {
+        #[command(subcommand)]
+        subcommand: BackupSubcommands,
+    },
+
     /// Agent Hook 极速裁决热路径入口（供 Codex PreToolUse 调用）
     Hook {
         #[command(subcommand)]
         agent: HookAgents,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum InstallAgents {
+    /// 安装或预览 Codex PreToolUse 防护钩子与策略镜像
+    Codex {
+        /// 目标环境标识（如 host:windows 或 wsl2:Ubuntu）
+        #[arg(long, default_value = "wsl2:Ubuntu")]
+        target: String,
+
+        /// 安装作用域：user | project
+        #[arg(long, default_value = "user")]
+        scope: String,
+
+        /// 显式指定目标 .codex 目录路径（用于沙箱隔离测试或指定项目目录）
+        #[arg(long)]
+        codex_home: Option<String>,
+
+        /// 显式指定备份仓库根目录
+        #[arg(long)]
+        backup_dir: Option<String>,
+
+        /// 显式指定 Hook 执行命令（省略时自动指向当前 ai-guard 二进制）
+        #[arg(long)]
+        hook_command: Option<String>,
+
+        /// 待分发部署的源 ai-guard 二进制路径
+        #[arg(long)]
+        binary_source: Option<String>,
+
+        /// 目标环境探针二进制部署路径（如 ~/.local/bin/ai-guard-linux）
+        #[arg(long)]
+        binary_dest: Option<String>,
+
+        /// 待同步的源 policy.toml 路径
+        #[arg(long)]
+        policy_source: Option<String>,
+
+        /// 目标环境策略镜像路径（如 ~/.config/ai-guard/policy.toml）
+        #[arg(long)]
+        policy_dest: Option<String>,
+
+        /// 可选预置的 Hook trusted_hash
+        #[arg(long)]
+        trusted_hash: Option<String>,
+
+        /// 仅预览 Unified Diff 与影响范围，不修改任何磁盘文件
+        #[arg(long)]
+        dry_run: bool,
+
+        /// 以 JSON 格式输出安装或预览结果
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum UninstallAgents {
+    /// 安全卸载 Codex PreToolUse 防护钩子
+    Codex {
+        /// 目标环境标识（如 host:windows 或 wsl2:Ubuntu）
+        #[arg(long, default_value = "wsl2:Ubuntu")]
+        target: String,
+
+        /// 卸载作用域：user | project
+        #[arg(long, default_value = "user")]
+        scope: String,
+
+        /// 显式指定目标 .codex 目录路径
+        #[arg(long)]
+        codex_home: Option<String>,
+
+        /// 显式指定备份仓库根目录
+        #[arg(long)]
+        backup_dir: Option<String>,
+
+        /// 仅预览卸载 Diff，不修改磁盘文件
+        #[arg(long)]
+        dry_run: bool,
+
+        /// 当检测到外部修改冲突时，仍强制仅剥离 AI卫士受管段落
+        #[arg(long)]
+        force: bool,
+
+        /// 以 JSON 格式输出卸载报告
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum RunAgents {
+    /// 经 Preflight 安全预检后受管启动 Codex
+    Codex {
+        /// 目标环境标识（如 host:windows 或 wsl2:Ubuntu）
+        #[arg(long, default_value = "wsl2:Ubuntu")]
+        target: String,
+
+        /// 显式指定目标 .codex 目录路径
+        #[arg(long)]
+        codex_home: Option<String>,
+
+        /// 显式指定 codex 可执行文件路径（默认在 PATH 中查找 codex）
+        #[arg(long, default_value = "codex")]
+        codex_bin: String,
+
+        /// 指定需校验的本地 policy.toml 路径
+        #[arg(long)]
+        policy: Option<String>,
+
+        /// 期望的策略文件 SHA-256 哈希（用于校验宿主机与 WSL2 策略镜像一致性）
+        #[arg(long)]
+        expected_policy_sha256: Option<String>,
+
+        /// 要求 config.toml 中必须已登记 trusted_hash，否则拒绝启动
+        #[arg(long)]
+        require_trusted: bool,
+
+        /// 仅执行 Preflight 检查并输出结果，不实际拉起 codex 进程
+        #[arg(long)]
+        dry_run: bool,
+
+        /// 以 JSON 格式输出 Preflight 检查报告
+        #[arg(long)]
+        json: bool,
+
+        /// 透传给 codex 的命令行参数列表（通过独立 argv 传递，严禁拼装 Shell 字符串）
+        #[arg(last = true)]
+        codex_args: Vec<String>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum BackupSubcommands {
+    /// 列出已有事务备份快照
+    List {
+        /// 按目标环境过滤（all | host:windows | wsl2:Ubuntu）
+        #[arg(long, default_value = "all")]
+        target: String,
+
+        /// 备份仓库根目录
+        #[arg(long)]
+        backup_dir: Option<String>,
+
+        /// 以 JSON 格式输出
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// 校验指定备份快照的 SHA-256 完整性
+    Verify {
+        /// 备份 ID（如 bk-1731000000000-1）
+        #[arg(long)]
+        id: String,
+
+        /// 备份仓库根目录
+        #[arg(long)]
+        backup_dir: Option<String>,
+
+        /// 以 JSON 格式输出
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// 校验 SHA-256 后从备份快照原子恢复原始文件
+    Restore {
+        /// 备份 ID（如 bk-1731000000000-1）
+        #[arg(long)]
+        id: String,
+
+        /// 备份仓库根目录
+        #[arg(long)]
+        backup_dir: Option<String>,
+
+        /// 以 JSON 格式输出
+        #[arg(long)]
+        json: bool,
     },
 }
 
