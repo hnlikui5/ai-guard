@@ -47,18 +47,26 @@
 
 ### 1.7 Phase 5.5：Antigravity（AGY）与 agy CLI 全链路原生 Hook 管控
 - [x] 输出《AGY 原生 Hook 协议真实契约规范》（`docs/AGY_HOOK_CONTRACT.md`）并在 PRD 与系统架构中确立技术方案
-- [ ] 在 `packages/agent-adapters` 实现 `AgyHookAdapter`，完成 ProtoJSON 解析、四大工具（`run_command`、`write_file`、`edit_file`、`call_mcp_tool`）归一化映射与 Fail-Closed 默认阻断
-- [ ] 在 `apps/local-service` 增加 `ai-guard hook agy pre-tool-use` 执行入口与 `ai-guard install agy` 事务安装/无损卸载
-- [ ] 在 `packages/session` 与 `packages/backup` 实现 AGY 转录流（`transcript.jsonl`）与 `brain/` 工件只读索引与 SHA-256 安全备份
-- [ ] 升级宿主机主控界面（`apps/desktop`），交付 Codex 与 AGY 双 Agent 并行治理看板与多源审计检索
-- [ ] 开展 AGY 离线与端到端拦截测试（涵盖放行、高危命令拦截与异常阻断）
+- [x] 在 `packages/agent-adapters` 实现 `AgyHookAdapter`，完成 ProtoJSON 解析、四大工具（`run_command`、`write_file`、`edit_file`、`call_mcp_tool`）归一化映射与 Fail-Closed 默认阻断
+- [x] 在 `apps/local-service` 增加 `ai-guard hook agy pre-tool-use` 执行入口与 `ai-guard install agy` 事务安装/无损卸载
+- [x] 在 `packages/session` 与 `packages/backup` 实现 AGY 转录流（`transcript.jsonl`）与 `brain/` 工件只读索引与 SHA-256 安全备份
+- [x] 升级宿主机主控界面（`apps/desktop`），交付 Codex 与 AGY 双 Agent 并行治理看板与多源审计检索
+- [x] 开展 AGY 离线与端到端拦截测试（涵盖放行、高危命令拦截与异常阻断）
+
+### 1.8 Phase 5.6：OpenCode & opencode CLI 全链路原生 Hook 管控
+- [x] 输出《OpenCode Hook 协议通信契约》（`docs/OPENCODE_HOOK_CONTRACT.md`）并在系统架构中确立接入方案
+- [x] 在 `packages/agent-adapters` 实现 `OpenCodeHookAdapter`，归一化解析 OpenCode 工具事件（bash、sh、write_file、edit_file 等）并落实 Fail-Closed
+- [x] 在 `apps/local-service` 增加 `ai-guard hook opencode pre-tool-use` 执行入口与 `ai-guard install opencode` 插件安装/卸载
+- [x] 实现 OpenCode 隔离沙箱端到端自检（`ai-guard self-test opencode`）与四态诊断
+- [x] 升级桌面控制中心（`apps/desktop`），支持 Codex、AGY 与 OpenCode 三大 Agent 对称治理与多源会话筛选
+- [x] 交叉编译 Windows 原生二进制与 NSIS 安装包
 
 ---
 
 ## 阶段二：Phase 6A（V0.2 ~ V0.3）多 Agent 扩展与 OS 内核级沙箱
 
 1. **多 Agent 适配扩展（`packages/agent-adapters`）**
-   - 接入 **Claude Code** 与 **OpenCode**，独立完成各自原生 Hook 协议契约与真实拦截 E2E 验证
+   - 接入 **Claude Code**，独立完成原生 Hook 协议契约与真实拦截 E2E 验证（OpenCode 已在 Phase 5.6 接入交付）
 2. **OS 级沙箱与防外传增强（`packages/security`）**
    - 开展 `nono` / Linux Landlock（WSL2 侧）及 Windows Job Object（宿主机侧）隔离 PoC，提供文件系统读写白名单与网络外传强制边界
 3. **跨 Agent Session 治理升级（`packages/session`、`packages/backup`）**

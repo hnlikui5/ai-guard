@@ -8,6 +8,7 @@
 
 pub mod agy_adapter;
 pub mod installer;
+pub mod opencode_adapter;
 
 pub use agy_adapter::{
     format_agy_pre_tool_use_output, handle_agy_pre_tool_use_bytes_with_engine,
@@ -19,6 +20,11 @@ pub use installer::{
     render_managed_toml_block, strip_managed_toml_block, uninstall_codex_hook, InstallReport,
     InstallRequest, InstallScope, InstallerError, PreflightCheckItem, PreflightReport,
     PreflightRequest, UninstallReport, UninstallRequest,
+};
+pub use opencode_adapter::{
+    handle_opencode_pre_tool_use_bytes_with_engine, parse_opencode_pre_tool_use_bytes,
+    read_and_parse_opencode_pre_tool_use, OpenCodePreToolUseWireInput,
+    OpenCodePreToolUseWireOutput, MAX_OPENCODE_HOOK_STDIN_BYTES,
 };
 
 use ai_guard_security::{

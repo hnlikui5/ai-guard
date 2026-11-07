@@ -893,7 +893,8 @@
                   <button onclick="filterSessions('all')" id="sess-filter-all" class="btn btn-primary btn-sm">全部</button>
                   <button onclick="filterSessions('host')" id="sess-filter-host" class="btn btn-outline btn-sm">Windows Codex</button>
                   <button onclick="filterSessions('wsl2')" id="sess-filter-wsl2" class="btn btn-outline btn-sm">WSL2 Codex</button>
-                  <button onclick="filterSessions('agy')" id="sess-filter-agy" class="btn btn-outline btn-sm">🚀 Antigravity (AGY)</button>
+                  <button onclick="filterSessions('agy')" id="sess-filter-agy" class="btn btn-outline btn-sm">🚀 AGY</button>
+                  <button onclick="filterSessions('opencode')" id="sess-filter-opencode" class="btn btn-outline btn-sm">⚡ OpenCode</button>
                   <input id="sess-search" oninput="renderSessions()" class="input-control" style="width:190px;height:30px;font-size:12px;" placeholder="搜索标题或项目目录..." />
                 </div>
               </div>
@@ -1133,12 +1134,17 @@
       const envContainer = document.getElementById('env-cards-container');
       envContainer.innerHTML = targets.map(t => {
         const isAgy = t.target_id.includes('AGY');
+        const isOpencode = t.target_id.toLowerCase().includes('opencode');
         const isHost = t.target_id.startsWith('host');
         let title, osSub, avatar;
         if (isAgy) {
           title = 'Antigravity (AGY) & agy CLI';
           osSub = isHost ? 'Windows 宿主机环境 (%USERPROFILE%\\.gemini)' : 'WSL2 Linux 环境 (' + t.target_id + ')';
           avatar = '🚀';
+        } else if (isOpencode) {
+          title = 'OpenCode & opencode CLI';
+          osSub = isHost ? 'Windows 宿主机环境 (%APPDATA%\\opencode)' : 'WSL2 Linux 环境 (' + t.target_id + ')';
+          avatar = '⚡';
         } else {
           title = isHost ? 'Windows 宿主机 Codex' : 'WSL2 子系统 Codex';
           osSub = isHost ? 'Windows 本机环境 (host:windows)' : 'Linux 发行版 (' + t.target_id + ')';
@@ -1146,12 +1152,17 @@
         }
         const envSessionCount = sessions.filter(s => {
           if (isAgy) return s.target_id.includes('AGY');
-          return isHost ? s.target_id.startsWith('host') && !s.target_id.includes('AGY') : s.target_id.startsWith('wsl2') && !s.target_id.includes('AGY');
+          if (isOpencode) return s.target_id.toLowerCase().includes('opencode');
+          return isHost
+            ? s.target_id.startsWith('host') && !s.target_id.includes('AGY') && !s.target_id.toLowerCase().includes('opencode')
+            : s.target_id.startsWith('wsl2') && !s.target_id.includes('AGY') && !s.target_id.toLowerCase().includes('opencode');
         }).length;
         const isInstalled = t.hook_configured_in_toml;
         const stText = isAgy
           ? (isInstalled ? '✓ ProtoJSON 执行前强拦截就绪' : '待挂接原生 Hook')
-          : ((t.last_self_test && t.last_self_test.passed) ? '✓ 自检通过（放行正常 / 拦截高危）' : '待运行自检');
+          : isOpencode
+            ? (isInstalled ? '✓ PreToolUse 插件拦截就绪' : '待挂接插件 Hook')
+            : ((t.last_self_test && t.last_self_test.passed) ? '✓ 自检通过（放行正常 / 拦截高危）' : '待运行自检');
 
         const mainActionBtn = isInstalled
           ? `<button onclick="toggleProtection('${t.target_id}', false)" class="btn btn-danger btn-sm">关闭此环境防护</button>`
@@ -1442,7 +1453,7 @@
 
     function filterSessions(filter) {
       currentSessionFilter = filter;
-      ['all', 'host', 'wsl2', 'agy'].forEach(k => {
+      ['all', 'host', 'wsl2', 'agy', 'opencode'].forEach(k => {
         const btn = document.getElementById('sess-filter-' + k);
         if (btn) btn.className = (k === filter) ? 'btn btn-primary btn-sm' : 'btn btn-outline btn-sm';
       });
@@ -1455,9 +1466,11 @@
       const q = (document.getElementById('sess-search').value || '').trim().toLowerCase();
       const filtered = all.filter(s => {
         const isAgy = s.target_id.includes('AGY');
+        const isOpencode = s.target_id.toLowerCase().includes('opencode');
         if (currentSessionFilter === 'agy' && !isAgy) return false;
-        if (currentSessionFilter === 'host' && (!s.target_id.startsWith('host') || isAgy)) return false;
-        if (currentSessionFilter === 'wsl2' && (!s.target_id.startsWith('wsl2') || isAgy)) return false;
+        if (currentSessionFilter === 'opencode' && !isOpencode) return false;
+        if (currentSessionFilter === 'host' && (!s.target_id.startsWith('host') || isAgy || isOpencode)) return false;
+        if (currentSessionFilter === 'wsl2' && (!s.target_id.startsWith('wsl2') || isAgy || isOpencode)) return false;
         if (q) {
           const hay = ((s.title || '') + ' ' + (s.cwd || '') + ' ' + (s.session_id || '')).toLowerCase();
           if (!hay.includes(q)) return false;
@@ -1473,10 +1486,13 @@
 
       container.innerHTML = filtered.map(s => {
         const isAgy = s.target_id.includes('AGY');
+        const isOpencode = s.target_id.toLowerCase().includes('opencode');
         const isHost = s.target_id.startsWith('host');
         let envBadge;
         if (isAgy) {
           envBadge = '<span class="badge" style="background:#e0e7ff;color:#3730a3;font-weight:600;">🚀 AGY</span>';
+        } else if (isOpencode) {
+          envBadge = '<span class="badge" style="background:#fef3c7;color:#92400e;font-weight:600;">⚡ OpenCode</span>';
         } else if (isHost) {
           envBadge = '<span class="badge badge-blue">💻 Win Codex</span>';
         } else {

@@ -62,6 +62,8 @@ pub enum ClientSurface {
     AgyCli,
     AgyDesktopApp,
     AgyIde,
+    OpenCodeCli,
+    OpenCodeDesktopApp,
     Unknown,
 }
 

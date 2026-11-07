@@ -157,6 +157,24 @@ pub enum SelfTestAgents {
         #[arg(long)]
         json: bool,
     },
+    /// 执行 OpenCode PreToolUse 隔离自检
+    Opencode {
+        /// 目标环境标识：all | host:windows | wsl2:Ubuntu
+        #[arg(long, default_value = "all")]
+        target: String,
+
+        /// 在隔离沙箱目录中运行自检（默认开启）
+        #[arg(long, default_value_t = true)]
+        isolated: bool,
+
+        /// 显式指定审计数据库路径
+        #[arg(long)]
+        db_path: Option<String>,
+
+        /// 以 JSON 格式输出自检报告
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -387,6 +405,36 @@ pub enum InstallAgents {
         #[arg(long)]
         json: bool,
     },
+    /// 安装或预览 OpenCode PreToolUse 防护插件
+    Opencode {
+        /// 目标环境标识（如 host:windows 或 wsl2:Ubuntu）
+        #[arg(long, default_value = "wsl2:Ubuntu")]
+        target: String,
+
+        /// 安装作用域：user | project
+        #[arg(long, default_value = "user")]
+        scope: String,
+
+        /// 显式指定 OpenCode 配置或插件目录路径（可选）
+        #[arg(long)]
+        config_path: Option<String>,
+
+        /// 显式指定 Hook 执行命令（省略时自动指向当前 ai-guard 二进制）
+        #[arg(long)]
+        hook_command: Option<String>,
+
+        /// 显式指定备份仓库根目录
+        #[arg(long)]
+        backup_dir: Option<String>,
+
+        /// 仅预览 Unified Diff 与影响范围，不修改磁盘文件
+        #[arg(long)]
+        dry_run: bool,
+
+        /// 以 JSON 格式输出安装或预览结果
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -432,6 +480,32 @@ pub enum UninstallAgents {
         scope: String,
 
         /// 显式指定 hooks.json 所在目录或配置文件路径（可选）
+        #[arg(long)]
+        config_path: Option<String>,
+
+        /// 显式指定备份仓库根目录
+        #[arg(long)]
+        backup_dir: Option<String>,
+
+        /// 仅预览卸载 Diff，不修改磁盘文件
+        #[arg(long)]
+        dry_run: bool,
+
+        /// 以 JSON 格式输出卸载报告
+        #[arg(long)]
+        json: bool,
+    },
+    /// 安全卸载 OpenCode PreToolUse 防护插件
+    Opencode {
+        /// 目标环境标识（如 host:windows 或 wsl2:Ubuntu）
+        #[arg(long, default_value = "wsl2:Ubuntu")]
+        target: String,
+
+        /// 卸载作用域：user | project
+        #[arg(long, default_value = "user")]
+        scope: String,
+
+        /// 显式指定 OpenCode 配置或插件目录路径（可选）
         #[arg(long)]
         config_path: Option<String>,
 
@@ -596,6 +670,11 @@ pub enum HookAgents {
         #[command(subcommand)]
         event: AgyHookEvents,
     },
+    /// OpenCode 与 opencode CLI Hook 协议入口
+    Opencode {
+        #[command(subcommand)]
+        event: OpencodeHookEvents,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -611,6 +690,16 @@ pub enum CodexHookEvents {
 #[derive(Debug, Subcommand)]
 pub enum AgyHookEvents {
     /// AGY PreToolUse 执行前拦截钩子（stdin 接收 ProtoJSON，stdout 输出标准 decision）
+    PreToolUse {
+        /// 可选自定义 TOML 策略文件路径（也可通过 AI_GUARD_POLICY_PATH 环境变量指定）
+        #[arg(long)]
+        policy: Option<String>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum OpencodeHookEvents {
+    /// OpenCode PreToolUse 执行前拦截钩子（stdin 接收 JSON，stdout 输出标准 decision）
     PreToolUse {
         /// 可选自定义 TOML 策略文件路径（也可通过 AI_GUARD_POLICY_PATH 环境变量指定）
         #[arg(long)]

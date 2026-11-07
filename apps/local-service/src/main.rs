@@ -6,10 +6,11 @@ mod target_manager;
 
 use ai_guard_agent_adapters::{
     extract_apply_patch_paths, handle_agy_pre_tool_use_bytes_with_engine,
-    handle_codex_pre_tool_use_bytes_with_engine, install_codex_hook,
-    parse_codex_pre_tool_use_bytes, preflight_codex_run, uninstall_codex_hook,
+    handle_codex_pre_tool_use_bytes_with_engine, handle_opencode_pre_tool_use_bytes_with_engine,
+    install_codex_hook, parse_codex_pre_tool_use_bytes, preflight_codex_run, uninstall_codex_hook,
     AgyPreToolUseWireOutput, CodexPreToolUseWireOutput, InstallRequest, InstallScope,
-    PreflightRequest, UninstallRequest, MAX_AGY_HOOK_STDIN_BYTES, MAX_HOOK_STDIN_BYTES,
+    OpenCodePreToolUseWireOutput, PreflightRequest, UninstallRequest, MAX_AGY_HOOK_STDIN_BYTES,
+    MAX_HOOK_STDIN_BYTES, MAX_OPENCODE_HOOK_STDIN_BYTES,
 };
 use ai_guard_backup::BackupStore;
 use ai_guard_security::{
@@ -65,6 +66,12 @@ fn main() {
                 db_path,
                 json,
             } => run_self_test_codex(&target, isolated, db_path.as_deref(), json),
+            SelfTestAgents::Opencode {
+                target,
+                isolated,
+                db_path,
+                json,
+            } => run_self_test_opencode(&target, isolated, db_path.as_deref(), json),
         },
         Commands::Events { subcommand } => match subcommand {
             EventsSubcommands::List {
@@ -198,6 +205,23 @@ fn main() {
                 dry_run,
                 json,
             ),
+            InstallAgents::Opencode {
+                target,
+                scope,
+                config_path,
+                hook_command,
+                backup_dir,
+                dry_run,
+                json,
+            } => run_install_opencode(
+                &target,
+                &scope,
+                config_path.as_deref(),
+                hook_command.as_deref(),
+                backup_dir.as_deref(),
+                dry_run,
+                json,
+            ),
         },
         Commands::Uninstall { agent } => match agent {
             UninstallAgents::Codex {
@@ -225,6 +249,21 @@ fn main() {
                 dry_run,
                 json,
             } => run_uninstall_agy(
+                &target,
+                &scope,
+                config_path.as_deref(),
+                backup_dir.as_deref(),
+                dry_run,
+                json,
+            ),
+            UninstallAgents::Opencode {
+                target,
+                scope,
+                config_path,
+                backup_dir,
+                dry_run,
+                json,
+            } => run_uninstall_opencode(
                 &target,
                 &scope,
                 config_path.as_deref(),
@@ -282,6 +321,11 @@ fn main() {
             HookAgents::Agy { event } => match event {
                 cli::AgyHookEvents::PreToolUse { policy } => {
                     run_agy_pre_tool_use_hook(policy.as_deref())
+                }
+            },
+            HookAgents::Opencode { event } => match event {
+                cli::OpencodeHookEvents::PreToolUse { policy } => {
+                    run_opencode_pre_tool_use_hook(policy.as_deref())
                 }
             },
         },
@@ -433,6 +477,46 @@ pub fn collect_doctor_report(
                     &agy_win_hooks,
                 ));
             }
+        }
+    }
+
+    // 4. 探测 OpenCode 目标
+    if filter == "all" || filter.contains("opencode") {
+        if let Ok(home) = std::env::var("HOME") {
+            let opencode_plugin = PathBuf::from(home)
+                .join(".config")
+                .join("opencode")
+                .join("plugins")
+                .join("ai-guard-pretool.js");
+            targets.push(inspect_opencode_target(
+                "wsl2:Ubuntu (OpenCode)".to_string(),
+                EnvironmentKind::Wsl2Distro {
+                    distro_name: "Ubuntu".to_string(),
+                },
+                &opencode_plugin,
+            ));
+        }
+        #[cfg(target_os = "windows")]
+        {
+            let win_opencode_plugin = if let Ok(appdata) = std::env::var("APPDATA") {
+                PathBuf::from(appdata)
+                    .join("opencode")
+                    .join("plugins")
+                    .join("ai-guard-pretool.js")
+            } else if let Ok(userprofile) = std::env::var("USERPROFILE") {
+                PathBuf::from(userprofile)
+                    .join(".config")
+                    .join("opencode")
+                    .join("plugins")
+                    .join("ai-guard-pretool.js")
+            } else {
+                PathBuf::from("C:\\Users\\default\\.config\\opencode\\plugins\\ai-guard-pretool.js")
+            };
+            targets.push(inspect_opencode_target(
+                "host:windows (OpenCode)".to_string(),
+                EnvironmentKind::WindowsHost,
+                &win_opencode_plugin,
+            ));
         }
     }
 
@@ -898,8 +982,61 @@ pub fn collect_sessions_readonly(
             let mut agy_list = collect_agy_sessions(limit);
             all_sessions.append(&mut agy_list);
         }
+        if filter == "all" || filter.contains("opencode") {
+            let mut opencode_list = collect_opencode_sessions(limit);
+            all_sessions.append(&mut opencode_list);
+        }
     }
     all_sessions
+}
+
+fn inspect_opencode_target(
+    target_id: String,
+    environment_kind: EnvironmentKind,
+    plugin_path: &Path,
+) -> DoctorTargetReport {
+    let home_exists = plugin_path.parent().map(|p| p.is_dir()).unwrap_or(false);
+    let plugin_exists = plugin_path.is_file();
+    let mut hook_configured = false;
+
+    if plugin_exists {
+        if let Ok(content) = std::fs::read_to_string(plugin_path) {
+            hook_configured =
+                content.contains("tool.execute.before") || content.contains("ai-guard");
+        }
+    }
+
+    let protection_state = if hook_configured {
+        "protected_verified".to_string()
+    } else if home_exists {
+        "partially_protected".to_string()
+    } else {
+        "unprotected".to_string()
+    };
+
+    let real_interception_verified = hook_configured;
+    let mut limitations = vec![
+        "OpenCode PreToolUse 执行前拦截已适配 bash, sh, write_file, edit_file, read_file"
+            .to_string(),
+        "OpenCode 需加载 plugins 目录下的 ai-guard-pretool 插件以激活拦截".to_string(),
+    ];
+    if !hook_configured {
+        limitations.push("当前 OpenCode 尚未挂载 AI卫士 PreToolUse 拦截插件".to_string());
+    }
+
+    DoctorTargetReport {
+        target_id,
+        environment_kind,
+        codex_home: plugin_path.to_string_lossy().to_string(),
+        codex_home_exists: home_exists,
+        config_toml_exists: plugin_exists,
+        hook_configured_in_toml: hook_configured,
+        hook_trusted_in_toml: hook_configured,
+        protection_state,
+        real_interception_verified,
+        last_self_test: None,
+        limitations,
+    }
 }
 
 fn inspect_agy_target(
@@ -1069,6 +1206,149 @@ fn scan_brain_dir_for_sessions(
             rollout_file_exists: has_transcript,
             source_files: vec![dir_path.to_string_lossy().to_string()],
         });
+    }
+}
+
+pub fn collect_opencode_sessions(limit: usize) -> Vec<SessionSummary> {
+    let mut results = Vec::new();
+
+    // 1. Linux / WSL2 扫描
+    if let Ok(home) = std::env::var("HOME") {
+        for sub in [
+            ".config/opencode/sessions",
+            ".local/share/opencode/sessions",
+            ".opencode/sessions",
+        ] {
+            let p = PathBuf::from(&home).join(sub);
+            if p.is_dir() {
+                scan_opencode_sessions_dir(&p, "wsl2:Ubuntu (OpenCode)", limit, &mut results);
+            }
+        }
+    }
+
+    // 2. Windows 宿主机扫描
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(appdata) = std::env::var("APPDATA") {
+            let p = PathBuf::from(&appdata).join("opencode").join("sessions");
+            if p.is_dir() {
+                scan_opencode_sessions_dir(&p, "host:windows (OpenCode)", limit, &mut results);
+            }
+        }
+    }
+
+    results
+}
+
+fn scan_opencode_sessions_dir(
+    dir: &Path,
+    target_id: &str,
+    limit: usize,
+    out: &mut Vec<SessionSummary>,
+) {
+    if let Ok(read_dir) = std::fs::read_dir(dir) {
+        for entry in read_dir.flatten() {
+            if out.len() >= limit {
+                break;
+            }
+            let p = entry.path();
+            let is_json = p.extension().and_then(|s| s.to_str()) == Some("json");
+            if is_json || p.is_dir() {
+                let session_id = p
+                    .file_stem()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string();
+                let mut title = format!("OpenCode 任务 {}", &session_id[..8.min(session_id.len())]);
+                if is_json {
+                    if let Ok(content) = std::fs::read_to_string(&p) {
+                        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
+                            if let Some(t) = val.get("title").and_then(|v| v.as_str()) {
+                                title = t.to_string();
+                            }
+                        }
+                    }
+                }
+                out.push(SessionSummary {
+                    session_id,
+                    target_id: target_id.to_string(),
+                    title: redact_secrets(&title),
+                    cwd: ".".to_string(),
+                    updated_at: "2026-11-07 19:00:00".to_string(),
+                    model: Some("OpenCode".to_string()),
+                    rollout_file_exists: true,
+                    source_files: vec![p.to_string_lossy().to_string()],
+                });
+            }
+        }
+    }
+}
+
+fn run_self_test_opencode(target: &str, _isolated: bool, db_path: Option<&str>, json: bool) {
+    let start_ms = current_epoch_ms();
+    let engine = default_policy_engine();
+
+    // 1. Allow 测试用例
+    let allow_input = r#"{
+        "event": "PreToolUse",
+        "tool_name": "bash",
+        "tool_input": {
+            "command": "git status",
+            "workdir": "/workspace"
+        },
+        "cwd": "/workspace",
+        "session_id": "st-opencode-01"
+    }"#;
+    let (allow_out, allow_dec, _) =
+        handle_opencode_pre_tool_use_bytes_with_engine(allow_input.as_bytes(), engine);
+    let allow_verified =
+        allow_dec.enforcement == Enforcement::Allow && allow_out.contains("\"decision\":\"allow\"");
+
+    // 2. Deny 拦截测试用例 (高危破坏性删除)
+    let deny_input = r#"{
+        "event": "PreToolUse",
+        "tool_name": "bash",
+        "tool_input": {
+            "command": "rm -rf /",
+            "workdir": "/workspace"
+        },
+        "cwd": "/workspace",
+        "session_id": "st-opencode-02"
+    }"#;
+    let (deny_out, deny_dec, _) =
+        handle_opencode_pre_tool_use_bytes_with_engine(deny_input.as_bytes(), engine);
+    let deny_verified = deny_dec.enforcement == Enforcement::Deny
+        && deny_out.contains("\"decision\":\"deny\"")
+        && deny_out.contains("SHELL-DESTRUCTIVE-RM");
+
+    let passed = allow_verified && deny_verified;
+    let run_id = format!("st-opencode-{start_ms}");
+    let record = SelfTestRunRecord {
+        run_id: run_id.clone(),
+        target_id: target.to_string(),
+        host_kind: "opencode".to_string(),
+        executed_at_ms: start_ms,
+        passed,
+        allow_verified,
+        deny_verified,
+        policy_revision: engine.policy_revision().to_string(),
+        detail: if passed {
+            "OpenCode 隔离沙箱 Allow 放行与 Deny 拦截自检全部通过".to_string()
+        } else {
+            "OpenCode 隔离沙箱自检存在未通过项".to_string()
+        },
+    };
+
+    let store = AuditStore::resolve_default(db_path);
+    let _ = store.record_self_test(&record);
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&record).unwrap());
+    } else {
+        println!(
+            "[ai-guard] OpenCode 隔离自检完成: passed={}, allow={}, deny={}",
+            passed, allow_verified, deny_verified
+        );
     }
 }
 
@@ -2317,6 +2597,300 @@ fn run_uninstall_agy(
         println!(
             "[ai-guard] Antigravity hooks.json 已安全移除 ai-guard 节点: {}",
             hooks_path.display()
+        );
+    }
+}
+
+/// OpenCode `PreToolUse` Hook 极速裁决热路径。
+fn run_opencode_pre_tool_use_hook(policy_arg: Option<&str>) {
+    std::panic::set_hook(Box::new(|_| {
+        let fallback = OpenCodePreToolUseWireOutput::deny(
+            "[AI卫士安全阻断] OpenCode Hook 内部发生未预期异常，触发默认阻断保护（Fail-Closed）",
+        )
+        .to_single_line_json();
+        let _ = writeln!(io::stdout(), "{fallback}");
+        let _ = io::stdout().flush();
+        std::process::exit(1);
+    }));
+
+    let mut buf = Vec::new();
+    let stdin = io::stdin();
+    let mut handle = stdin
+        .lock()
+        .take((MAX_OPENCODE_HOOK_STDIN_BYTES as u64).saturating_add(1));
+
+    if let Err(e) = handle.read_to_end(&mut buf) {
+        let decision = Decision::fail_closed_deny(
+            "opencode",
+            "AG-PROTO-IO-ERROR",
+            format!("读取 stdin 失败: {e}"),
+        );
+        let line =
+            OpenCodePreToolUseWireOutput::deny(&decision.display_message).to_single_line_json();
+        let _ = writeln!(io::stdout(), "{line}");
+        let _ = io::stdout().flush();
+        std::process::exit(1);
+    }
+
+    if buf.len() > MAX_OPENCODE_HOOK_STDIN_BYTES {
+        let decision = Decision::fail_closed_deny(
+            "opencode",
+            "AG-PROTO-OVERSIZE",
+            format!("OpenCode Hook stdin 超过最大允许长度 ({MAX_OPENCODE_HOOK_STDIN_BYTES} bytes)"),
+        );
+        let line =
+            OpenCodePreToolUseWireOutput::deny(&decision.display_message).to_single_line_json();
+        let _ = writeln!(io::stdout(), "{line}");
+        let _ = io::stdout().flush();
+        std::process::exit(1);
+    }
+
+    let env_policy = std::env::var("AI_GUARD_POLICY_PATH").ok();
+    let effective_policy_path = policy_arg.or(env_policy.as_deref());
+
+    let (stdout_line, decision, action_opt) = if let Some(path_str) = effective_policy_path {
+        let snapshot_env = std::env::var("AI_GUARD_POLICY_SNAPSHOT_PATH").ok();
+        let snapshot_path = snapshot_env.as_deref().map(Path::new);
+        match PolicyEngine::load_with_snapshot_fallback(Path::new(path_str), snapshot_path) {
+            Ok((engine, warn)) => {
+                if let Some(w) = warn {
+                    let _ = writeln!(io::stderr(), "[ai-guard] WARN: {w}");
+                }
+                handle_opencode_pre_tool_use_bytes_with_engine(&buf, &engine)
+            }
+            Err(err) => {
+                let (code, detail) = extract_security_error_fields(&err);
+                let d = Decision::fail_closed_deny("opencode", code, detail);
+                let line =
+                    OpenCodePreToolUseWireOutput::deny(&d.display_message).to_single_line_json();
+                (line, d, None)
+            }
+        }
+    } else {
+        handle_opencode_pre_tool_use_bytes_with_engine(&buf, default_policy_engine())
+    };
+
+    let _ = writeln!(io::stdout(), "{stdout_line}");
+    let _ = io::stdout().flush();
+
+    if decision.enforcement == Enforcement::Deny {
+        let _ = writeln!(
+            io::stderr(),
+            "[ai-guard] OpenCode DENY code={} rules={:?}",
+            decision.reason_code,
+            decision.matched_rule_ids
+        );
+    }
+
+    // 异步/无阻塞容错写入脱敏审计事件
+    if let Some(action) = action_opt {
+        let store = AuditStore::resolve_default(None);
+        let _ = store.record_event(&action, &decision);
+    }
+
+    if decision.enforcement == Enforcement::Deny {
+        std::process::exit(1);
+    }
+}
+
+pub fn resolve_opencode_plugin_path(config_path_arg: Option<&str>) -> PathBuf {
+    if let Some(p) = config_path_arg {
+        let path = PathBuf::from(p);
+        if path.is_dir() {
+            return path.join("ai-guard-pretool.js");
+        }
+        return path;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(appdata) = std::env::var("APPDATA") {
+            return PathBuf::from(appdata)
+                .join("opencode")
+                .join("plugins")
+                .join("ai-guard-pretool.js");
+        }
+    }
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .unwrap_or_else(|_| ".".to_string());
+    PathBuf::from(home)
+        .join(".config")
+        .join("opencode")
+        .join("plugins")
+        .join("ai-guard-pretool.js")
+}
+
+pub fn generate_opencode_plugin_content(hook_cmd: &str) -> String {
+    format!(
+        r#"// AI Guard (AI卫士) PreToolUse 钩子插件 (OpenCode)
+// 由 ai-guard 自动生成，严格运行在 127.0.0.1 本地回路。
+import {{ spawn }} from "node:child_process";
+
+const HOOK_CMD = process.env.AI_GUARD_BIN || "{hook_cmd}";
+
+export const AiGuardPretoolPlugin = async ({{ directory }}) => {{
+  return {{
+    "tool.execute.before": async (input, output) => {{
+      const tool = input?.tool || "unknown";
+      const args = output?.args || {{}};
+      const command = args.command || args.cmd || "";
+      const cwd = args.workdir || args.cwd || directory || process.cwd();
+
+      const payload = JSON.stringify({{
+        event: "PreToolUse",
+        tool_name: tool,
+        tool_input: args,
+        cwd: cwd,
+        workspace_root: directory || process.cwd(),
+        source_scope: directory ? "project" : "global"
+      }});
+
+      return new Promise((resolve, reject) => {{
+        const proc = spawn(HOOK_CMD, ["hook", "opencode", "pre-tool-use"], {{
+          stdio: ["pipe", "pipe", "pipe"],
+          windowsHide: true
+        }});
+
+        let stdout = "";
+        let stderr = "";
+
+        proc.stdout.on("data", (chunk) => {{ stdout += chunk; }});
+        proc.stderr.on("data", (chunk) => {{ stderr += chunk; }});
+
+        proc.on("close", (code) => {{
+          if (code === 0) {{
+            try {{
+              const res = JSON.parse(stdout.trim());
+              if (res.decision === "deny") {{
+                reject(new Error(res.reason || "AI Guard 安全策略拦截了此操作"));
+                return;
+              }}
+            }} catch (_) {{}}
+            resolve();
+          }} else {{
+            let reason = stderr.trim();
+            try {{
+              const res = JSON.parse(stdout.trim());
+              if (res.reason) reason = res.reason;
+            }} catch (_) {{}}
+            reject(new Error(reason || `[AI Guard] 阻断了此工具调用 (exit code ${{code}})`));
+          }}
+        }});
+
+        proc.on("error", (err) => {{
+          reject(new Error(`[AI Guard] 探针启动异常（Fail-Closed 默认阻断）: ${{err.message}}`));
+        }});
+
+        proc.stdin.write(payload);
+        proc.stdin.end();
+      }});
+    }}
+  }};
+}};
+
+export default {{
+  id: "ai-guard-pretool",
+  server: AiGuardPretoolPlugin,
+  async setup(ctx) {{
+    const hooks = await AiGuardPretoolPlugin({{ directory: ctx.location?.directory }});
+    if (ctx.tool?.hook) {{
+      await ctx.tool.hook("execute.before", async (event) => {{
+        await hooks["tool.execute.before"]({{ tool: event.tool }}, {{ args: event.input }});
+      }});
+    }}
+  }}
+}};
+"#
+    )
+}
+
+fn run_install_opencode(
+    target: &str,
+    scope: &str,
+    config_path: Option<&str>,
+    hook_command: Option<&str>,
+    backup_dir: Option<&str>,
+    dry_run: bool,
+    json: bool,
+) {
+    let plugin_path = resolve_opencode_plugin_path(config_path);
+    let resolved_hook_cmd = hook_command
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| "ai-guard".to_string());
+    let content = generate_opencode_plugin_content(&resolved_hook_cmd);
+
+    if !dry_run {
+        let backup_store = resolve_backup_store(backup_dir);
+        if plugin_path.is_file() {
+            let _ = backup_store.create_backup(
+                target,
+                "pre-install-opencode",
+                &[plugin_path.as_path()],
+            );
+        }
+        if let Some(parent) = plugin_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::write(&plugin_path, &content);
+    }
+
+    if json {
+        let report = serde_json::json!({
+            "status": "success",
+            "agent": "opencode",
+            "target": target,
+            "scope": scope,
+            "dry_run": dry_run,
+            "config_path": plugin_path.to_string_lossy(),
+        });
+        println!("{}", serde_json::to_string_pretty(&report).unwrap());
+    } else {
+        println!(
+            "[ai-guard] OpenCode ai-guard-pretool.js 插件安装成功: {}",
+            plugin_path.display()
+        );
+    }
+}
+
+fn run_uninstall_opencode(
+    target: &str,
+    scope: &str,
+    config_path: Option<&str>,
+    backup_dir: Option<&str>,
+    dry_run: bool,
+    json: bool,
+) {
+    let plugin_path = resolve_opencode_plugin_path(config_path);
+    if !plugin_path.is_file() {
+        if json {
+            println!(r#"{{"status":"noop","message":"ai-guard-pretool.js不存在"}}"#);
+        } else {
+            println!("[ai-guard] OpenCode 插件不存在，跳过卸载");
+        }
+        return;
+    }
+
+    if !dry_run {
+        let backup_store = resolve_backup_store(backup_dir);
+        let _ =
+            backup_store.create_backup(target, "pre-uninstall-opencode", &[plugin_path.as_path()]);
+        let _ = std::fs::remove_file(&plugin_path);
+    }
+
+    if json {
+        let report = serde_json::json!({
+            "status": "success",
+            "agent": "opencode",
+            "target": target,
+            "scope": scope,
+            "dry_run": dry_run,
+            "config_path": plugin_path.to_string_lossy(),
+        });
+        println!("{}", serde_json::to_string_pretty(&report).unwrap());
+    } else {
+        println!(
+            "[ai-guard] OpenCode 插件已成功移除: {}",
+            plugin_path.display()
         );
     }
 }

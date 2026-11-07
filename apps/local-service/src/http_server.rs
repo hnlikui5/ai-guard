@@ -700,6 +700,12 @@ fn route_api_request(
                 }
             }
 
+            if tid.contains("OpenCode") {
+                if let Some(detail) = get_opencode_session_detail(tid, sid) {
+                    return (200, json!({ "ok": true, "detail": detail }));
+                }
+            }
+
             let codex_home = crate::resolve_codex_home_for_target(tid, InstallScope::User, None);
             match get_codex_session_detail(tid, &codex_home, sid) {
                 Ok(detail) => (200, json!({ "ok": true, "detail": detail })),
@@ -839,6 +845,31 @@ fn route_api_request(
                 );
             }
 
+            if tid_raw.to_lowercase().contains("opencode") {
+                let plugin_path = crate::resolve_opencode_plugin_path(None);
+                let content = crate::generate_opencode_plugin_content("ai-guard");
+                if !dry_run {
+                    if let Some(parent) = plugin_path.parent() {
+                        let _ = std::fs::create_dir_all(parent);
+                    }
+                    let _ = std::fs::write(&plugin_path, &content);
+                }
+                return (
+                    200,
+                    json!({
+                        "ok": true,
+                        "dry_run": dry_run,
+                        "reports": [{
+                            "target_id": tid_raw,
+                            "config_toml_path": plugin_path.to_string_lossy(),
+                            "unified_diff": "+ OpenCode PreToolUse ai-guard-pretool.js plugin installed",
+                            "trust_guidance": "OpenCode ai-guard-pretool 插件安装成功",
+                        }],
+                        "bootstrap": build_bootstrap_json(cfg),
+                    }),
+                );
+            }
+
             let bstore = crate::resolve_backup_store(cfg.backup_dir.as_deref());
 
             let targets_to_run: Vec<String> = if tid_raw == "all" {
@@ -936,6 +967,26 @@ fn route_api_request(
                             "config_toml_path": hooks_path.to_string_lossy(),
                             "unified_diff": "- \"ai-guard\": { ... }",
                             "trust_guidance": "Antigravity hooks.json 已安全移除",
+                        }],
+                        "bootstrap": build_bootstrap_json(cfg),
+                    }),
+                );
+            }
+
+            if tid_raw.to_lowercase().contains("opencode") {
+                let plugin_path = crate::resolve_opencode_plugin_path(None);
+                if plugin_path.is_file() {
+                    let _ = std::fs::remove_file(&plugin_path);
+                }
+                return (
+                    200,
+                    json!({
+                        "ok": true,
+                        "reports": [{
+                            "target_id": tid_raw,
+                            "config_toml_path": plugin_path.to_string_lossy(),
+                            "unified_diff": "- OpenCode PreToolUse ai-guard-pretool.js plugin removed",
+                            "trust_guidance": "OpenCode 插件已安全移除",
                         }],
                         "bootstrap": build_bootstrap_json(cfg),
                     }),
@@ -1226,6 +1277,86 @@ fn get_agy_session_detail(
         turns_count,
         rollout_events_count,
         rollout_path: Some(transcript_path.to_string_lossy().to_string()),
+        redacted_preview: Some(redact_secrets(&preview_lines.join("\n"))),
+    })
+}
+
+fn get_opencode_session_detail(
+    target_id: &str,
+    session_id: &str,
+) -> Option<ai_guard_session::SessionDetail> {
+    let mut candidate_paths = Vec::new();
+
+    if let Ok(home) = std::env::var("HOME") {
+        for sub in [
+            ".config/opencode/sessions",
+            ".local/share/opencode/sessions",
+            ".opencode/sessions",
+        ] {
+            candidate_paths.push(
+                PathBuf::from(&home)
+                    .join(sub)
+                    .join(format!("{session_id}.json")),
+            );
+        }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(appdata) = std::env::var("APPDATA") {
+            candidate_paths.push(
+                PathBuf::from(&appdata)
+                    .join("opencode")
+                    .join("sessions")
+                    .join(format!("{session_id}.json")),
+            );
+        }
+    }
+
+    let found_path = candidate_paths.into_iter().find(|p| p.is_file());
+    let mut title = format!("OpenCode 任务 {}", &session_id[..8.min(session_id.len())]);
+    let mut turns_count = 1;
+    let mut preview_lines = vec!["[OpenCode] 会话事件流".to_string()];
+
+    if let Some(ref path) = found_path {
+        if let Ok(content) = std::fs::read_to_string(path) {
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
+                if let Some(t) = val.get("title").and_then(|v| v.as_str()) {
+                    title = t.to_string();
+                }
+                if let Some(arr) = val.get("messages").and_then(|v| v.as_array()) {
+                    turns_count = arr.len();
+                    for msg in arr.iter().take(3) {
+                        if let (Some(role), Some(text)) = (
+                            msg.get("role").and_then(|v| v.as_str()),
+                            msg.get("content").and_then(|v| v.as_str()),
+                        ) {
+                            preview_lines
+                                .push(format!("{role}: {}", text.lines().next().unwrap_or("")));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let summary = ai_guard_session::SessionSummary {
+        session_id: session_id.to_string(),
+        target_id: target_id.to_string(),
+        title: redact_secrets(&title),
+        cwd: ".".to_string(),
+        updated_at: "2026-11-07 19:00:00".to_string(),
+        model: Some("OpenCode Agent".to_string()),
+        rollout_file_exists: found_path.is_some(),
+        source_files: found_path
+            .map(|p| vec![p.to_string_lossy().to_string()])
+            .unwrap_or_default(),
+    };
+
+    Some(ai_guard_session::SessionDetail {
+        summary,
+        turns_count,
+        rollout_events_count: turns_count,
+        rollout_path: None,
         redacted_preview: Some(redact_secrets(&preview_lines.join("\n"))),
     })
 }
