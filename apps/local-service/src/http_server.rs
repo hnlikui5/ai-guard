@@ -44,6 +44,9 @@ pub struct ServeConfig {
 pub fn try_open_browser(url: &str) {
     #[cfg(target_os = "windows")]
     {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+
         let app_arg = format!("--app={url}");
         let size_arg = "--window-size=980,640";
         let candidate_bins = [
@@ -57,11 +60,10 @@ pub fn try_open_browser(url: &str) {
 
         let mut opened = false;
         for bin in candidate_bins {
-            if std::process::Command::new(bin)
-                .args([&app_arg, size_arg])
-                .spawn()
-                .is_ok()
-            {
+            let mut cmd = std::process::Command::new(bin);
+            cmd.args([&app_arg, size_arg]);
+            cmd.creation_flags(CREATE_NO_WINDOW);
+            if cmd.spawn().is_ok() {
                 opened = true;
                 break;
             }
@@ -69,14 +71,14 @@ pub fn try_open_browser(url: &str) {
 
         // 若均未成功，回退到系统默认 explorer / 协议打开
         if !opened {
-            if std::process::Command::new("explorer")
-                .arg(url)
-                .spawn()
-                .is_err()
-            {
-                let _ = std::process::Command::new("rundll32")
-                    .args(["url.dll,FileProtocolHandler", url])
-                    .spawn();
+            let mut cmd_exp = std::process::Command::new("explorer");
+            cmd_exp.arg(url);
+            cmd_exp.creation_flags(CREATE_NO_WINDOW);
+            if cmd_exp.spawn().is_err() {
+                let mut cmd_dll = std::process::Command::new("rundll32");
+                cmd_dll.args(["url.dll,FileProtocolHandler", url]);
+                cmd_dll.creation_flags(CREATE_NO_WINDOW);
+                let _ = cmd_dll.spawn();
             }
         }
     }
@@ -111,6 +113,43 @@ pub fn try_open_browser(url: &str) {
     }
 }
 
+/// 尝试在前台唤醒并置顶已有的 AI卫士 独立窗口
+#[cfg(target_os = "windows")]
+#[allow(unsafe_code)]
+pub fn try_focus_existing_window() -> bool {
+    use windows_sys::Win32::Foundation::{BOOL, HWND, LPARAM};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        EnumWindows, GetWindowTextW, IsWindowVisible, SetForegroundWindow, ShowWindow, SW_RESTORE,
+    };
+
+    unsafe extern "system" fn enum_window_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        let found_ptr = lparam as *mut HWND;
+        if IsWindowVisible(hwnd) != 0 {
+            let mut title = [0u16; 512];
+            let len = GetWindowTextW(hwnd, title.as_mut_ptr(), 512);
+            if len > 0 {
+                let s = String::from_utf16_lossy(&title[..len as usize]);
+                if s.contains("AI卫士") || s.contains("AI Guard") {
+                    *found_ptr = hwnd;
+                    return 0; // 停止遍历
+                }
+            }
+        }
+        1 // 继续遍历
+    }
+
+    let mut found_hwnd: HWND = 0;
+    unsafe {
+        EnumWindows(Some(enum_window_proc), &mut found_hwnd as *mut HWND as LPARAM);
+        if found_hwnd != 0 {
+            ShowWindow(found_hwnd, SW_RESTORE);
+            SetForegroundWindow(found_hwnd);
+            return true;
+        }
+    }
+    false
+}
+
 /// 快速探测指定回路端口上是否已有正在运行的 AI卫士 实例
 fn is_ai_guard_already_running(addr: std::net::SocketAddr) -> bool {
     let stream_res = TcpStream::connect_timeout(&addr, Duration::from_millis(1500));
@@ -127,11 +166,11 @@ fn is_ai_guard_already_running(addr: std::net::SocketAddr) -> bool {
     if stream.write_all(req.as_bytes()).is_err() {
         return false;
     }
-    let mut buf = [0u8; 1024];
-    if let Ok(n) = stream.read(&mut buf) {
-        if let Ok(s) = std::str::from_utf8(&buf[..n]) {
-            return s.contains("ai-guard-local-service");
-        }
+    let mut resp = Vec::new();
+    let _ = stream.read_to_end(&mut resp);
+    if let Ok(s) = std::str::from_utf8(&resp) {
+        return s.contains("ai-guard-local-service")
+            || (s.starts_with("HTTP/1.1 200") && s.contains("policy_revision"));
     }
     false
 }
@@ -188,12 +227,19 @@ pub fn run_http_server(
                 if max_requests_for_test.is_none() {
                     println!("==================================================================");
                     println!("  AI卫士（AI Guard）服务已在运行中: http://{sock_addr}");
-                    println!("  正在为您在默认浏览器中打开控制台界面...");
+                    println!("  正在为您在默认浏览器中打开/唤醒控制台界面...");
                     println!("==================================================================");
                     if cfg.auto_open {
+                        #[cfg(target_os = "windows")]
+                        {
+                            if !try_focus_existing_window() {
+                                try_open_browser(&format!("http://{sock_addr}"));
+                            }
+                        }
+                        #[cfg(not(target_os = "windows"))]
                         try_open_browser(&format!("http://{sock_addr}"));
                     }
-                    std::thread::sleep(Duration::from_secs(2));
+                    std::thread::sleep(Duration::from_millis(300));
                 }
                 return Ok(());
             }
@@ -1261,9 +1307,11 @@ fn write_raw_response(
         "HTTP/1.1 {status} {status_text}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type\r\nAccess-Control-Allow-Private-Network: true\r\nConnection: close\r\n\r\n",
         bytes.len()
     );
+    let mut resp = Vec::with_capacity(header.len() + bytes.len());
+    resp.extend_from_slice(header.as_bytes());
+    resp.extend_from_slice(bytes);
     stream
-        .write_all(header.as_bytes())
-        .and_then(|_| stream.write_all(bytes))
+        .write_all(&resp)
         .and_then(|_| stream.flush())
         .map_err(|e| e.to_string())
 }

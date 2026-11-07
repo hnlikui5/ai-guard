@@ -614,4 +614,24 @@ message = "msg"
             "P95 evaluation latency must be <= 10ms (10,000 us), got {p95_us} us"
         );
     }
+
+    #[test]
+    fn test_unicode_and_chinese_paths_never_panic() {
+        let engine = PolicyEngine::default_builtin();
+        let ev = make_shell_event(
+            "strings /mnt/c/Users/kui.li/Desktop/AI卫士/ai-guard.exe | grep AI卫士",
+            false,
+        );
+        let d = engine.evaluate(&ev);
+        assert_eq!(d.enforcement, Enforcement::Allow);
+
+        let mut ev_patch = make_shell_event("edit_file", false);
+        ev_patch.action_kind = ActionKind::FilePatch;
+        ev_patch.target_paths = vec![
+            "C:/Users/kui.li/Desktop/AI卫士/src/main.rs".to_string(),
+            "AI卫士/测试.txt".to_string(),
+        ];
+        let d2 = engine.evaluate(&ev_patch);
+        assert_eq!(d2.enforcement, Enforcement::Allow);
+    }
 }

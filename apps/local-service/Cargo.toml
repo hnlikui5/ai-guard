@@ -25,6 +25,7 @@ thiserror.workspace = true
 [target.'cfg(target_os = "windows")'.dependencies]
 tray-item = "0.10.0"
 windows-sys = { version = "0.52", features = [
+    "Win32_Foundation",
     "Win32_UI_WindowsAndMessaging",
     "Win32_System_Console"
 ] }

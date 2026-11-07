@@ -293,12 +293,11 @@ fn discover_rollout_files(sessions_dir: &Path) -> HashMap<String, PathBuf> {
                 stack.push(path);
             } else if path.extension().and_then(|s| s.to_str()) == Some("jsonl") {
                 if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                    // 兼容标准 Codex rollout-YYYY-MM-DDTHH-MM-SS-<uuid> 格式
+                    // 1. 优先匹配 36 字符 UUID 后缀（兼容 rollout-YYYY-MM-DDTHH-MM-SS-<uuid> 及 rollout-<uuid>）
                     if let Some(uuid_part) = extract_uuid_suffix(stem) {
-                        map.insert(uuid_part, path.clone());
-                    }
-                    // 兼容迁移生成的 rollout-<session_id>.jsonl
-                    if let Some(rest) = stem.strip_prefix("rollout-") {
+                        map.insert(uuid_part, path);
+                    } else if let Some(rest) = stem.strip_prefix("rollout-") {
+                        // 2. 其它非标准 UUID 命名的 rollout 会话
                         map.insert(rest.to_string(), path);
                     }
                 }

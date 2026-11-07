@@ -289,7 +289,10 @@ pub fn is_sensitive_or_traversal_path(raw_path: &str) -> bool {
     // 2. 栈式规范化分段并检查是否穿越工作区根边界（depth < 0）
     let is_abs = lower.starts_with('/')
         || lower.starts_with("~/")
-        || (lower.len() >= 3 && lower.as_bytes()[0].is_ascii_alphabetic() && &lower[1..3] == ":/");
+        || (lower.len() >= 3
+            && lower.as_bytes()[0].is_ascii_alphabetic()
+            && lower.as_bytes()[1] == b':'
+            && lower.as_bytes()[2] == b'/');
 
     let mut depth: i32 = 0;
     let mut normalized_segments: Vec<&str> = Vec::new();

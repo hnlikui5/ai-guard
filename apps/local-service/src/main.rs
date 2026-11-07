@@ -2662,7 +2662,8 @@ fn run_codex_pre_tool_use_hook(policy_arg: Option<&str>) {
 
 /// AGY `PreToolUse` Hook 极速裁决热路径。
 fn run_agy_pre_tool_use_hook(policy_arg: Option<&str>) {
-    std::panic::set_hook(Box::new(|_| {
+    std::panic::set_hook(Box::new(|info| {
+        let _ = writeln!(io::stderr(), "[ai-guard hook panic]: {info}");
         let fallback = AgyPreToolUseWireOutput::deny(
             "[AI卫士安全阻断] AGY Hook 内部发生未预期异常，触发默认阻断保护（Fail-Closed）",
         )
@@ -2881,7 +2882,8 @@ fn run_uninstall_agy(
 
 /// OpenCode `PreToolUse` Hook 极速裁决热路径。
 fn run_opencode_pre_tool_use_hook(policy_arg: Option<&str>) {
-    std::panic::set_hook(Box::new(|_| {
+    std::panic::set_hook(Box::new(|info| {
+        let _ = writeln!(io::stderr(), "[ai-guard hook panic]: {info}");
         let fallback = OpenCodePreToolUseWireOutput::deny(
             "[AI卫士安全阻断] OpenCode Hook 内部发生未预期异常，触发默认阻断保护（Fail-Closed）",
         )
