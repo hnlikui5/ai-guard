@@ -23,20 +23,20 @@ AI卫士是一款**运行在 Windows 宿主机上的原生桌面安全管理平�
    - 在已进入 Rust Hook 进程且能返回合法协议的范围内，任何解析失败、策略损坏或未知输入均显式返回 `permissionDecision = "deny"`（Fail-Closed）。
    - 严格区分 `Observe（观察）`、`Hook Deny（协议层拒绝）` 与 `Sandbox Enforcement（内核强制隔离）`，按被纳管的每个环境独立计算并展示四态防护状态（`protected_verified` / `partially_protected` / `unprotected` / `unknown`）。
 6. **只读优先与先备后改**：
-   - 对宿主机与 WSL2 内的 Codex 会话数据（`session_index.jsonl`、`thread_history_1.sqlite`、`state_5.sqlite`）与 AGY 转录（`transcript.jsonl`）坚持只读访问；
-   - 任何修改宿主机或 WSL2 Codex / AGY 配置、清理会话的操作，强制前置调用 `packages/backup` 完成快照备份与 SHA-256 完整性校验。
+   - 对宿主机与 WSL2 内的 Codex 会话数据（`session_index.jsonl`、`thread_history_1.sqlite`、`state_5.sqlite`）、AGY 转录（`transcript.jsonl`）与 OpenCode 会话（`session` 目录）坚持只读访问；
+   - 任何修改宿主机或 WSL2 Codex / AGY / OpenCode 配置、清理会话的操作，强制前置调用 `packages/backup` 完成快照备份与 SHA-256 完整性校验。
 7. **多 Agent 协议解耦与统一策略内核（Multi-Agent Protocol Decoupling）**：
-   - 适配层（`packages/agent-adapters`）将不同 Agent 的特定通信协议（Codex 的 `PreToolUse` hookSpecificOutput 与 AGY 的 ProtoJSON decision）归一化为标准的 `ActionEvent`；
-   - 核心安全引擎（`packages/security`）与统一审计库（`packages/storage`）保持 100% Agent 无关，实现一套规则引擎同时保护 Codex 与 AGY。
+   - 适配层（`packages/agent-adapters`）将不同 Agent 的特定通信协议（Codex 的 `PreToolUse` hookSpecificOutput、AGY 的 ProtoJSON decision 与 OpenCode 的 Plugin Wire JSON + 退出码契约）归一化为标准的 `ActionEvent`；
+   - 核心安全引擎（`packages/security`）与统一审计库（`packages/storage`）保持 100% Agent 无关，实现一套规则引擎同时保护 Codex、AGY 与 OpenCode。
 
 ---
 
-## 2. 系统总体架构图（宿主机主控 + 双 Agent 协同）
+## 2. 系统总体架构图（宿主机主控 + 多 Agent 协同）
 
 ```mermaid
 flowchart TB
     subgraph WinHost["1. Windows 宿主机（主控中心 · AI卫士主程序运行环境）"]
-        UI["AI卫士 桌面界面 (apps/desktop: Tauri 2 + React + TS)\n统一概览 / 多 Agent 与环境管理 / 策略中心 / 统一审计 / 诊断与备份"]
+        UI["AI卫士 桌面界面 (apps/desktop: 980×640 紧凑管家式 / 托盘常驻)\n统一概览 / 多 Agent 与环境管理 / 策略中心 / 统一审计 / 诊断与备份"]
         HostSvc["宿主机核心服务层 (Rust Core: local-service + packages/*)\n统一策略管理 / 目标调度器 (TargetManager) / 审计汇聚 / Session 索引"]
         HostDB[("宿主机统一真相库 (%LOCALAPPDATA%\\ai-guard\\)\n主策略 policy.toml + 统一审计库 events.db + 备份仓 backups/")]
 
@@ -50,14 +50,22 @@ flowchart TB
             WinAgyHook["宿主机原生 AGY 拦截器\nai-guard.exe hook agy pre-tool-use"]
         end
 
+        subgraph WinOpencodeTarget["受管目标 A3：Windows 宿主机 OpenCode"]
+            WinOpencode["OpenCode 桌面版 / CLI\n(%USERPROFILE%\\.opencode\\plugins\\)"]
+            WinOpencodeHook["宿主机 OpenCode 插件拦截器\nai-guard-pretool.js -> ai-guard.exe hook opencode"]
+        end
+
         UI <--> HostSvc
         HostSvc <--> HostDB
         HostSvc ==>|"原生 API 管理配置 / 备份 / 只读会话"| WinCodex
         HostSvc ==>|"增量管理 hooks.json / 备份 / 只读转录"| WinAgy
+        HostSvc ==>|"管理插件 ai-guard-pretool.js / 备份 / 只读会话"| WinOpencode
         WinCodex <-->|"PreToolUse 裁决 (JSON)"| WinCodexHook
         WinAgy <-->|"ProtoJSON PreToolUse 裁决"| WinAgyHook
+        WinOpencode <-->|"Plugin Hook 裁决 (Exit Code 0/1)"| WinOpencodeHook
         WinCodexHook -->|"读取策略 / 写入审计"| HostDB
         WinAgyHook -->|"读取策略 / 写入审计"| HostDB
+        WinOpencodeHook -->|"读取策略 / 写入审计"| HostDB
     end
 
     subgraph WSL2Env["2. WSL2 Ubuntu 子系统（被纳管的受控子环境）"]
@@ -71,12 +79,19 @@ flowchart TB
             WSLAgyHook["WSL2 原生 AGY 拦截器\n~/.local/bin/ai-guard-linux hook agy pre-tool-use"]
         end
 
+        subgraph WSLOpencodeTarget["受管目标 B3：WSL2 内部 OpenCode"]
+            WSLOpencode["WSL2 OpenCode CLI\n(~/.opencode/plugins/)"]
+            WSLOpencodeHook["WSL2 OpenCode 插件拦截器\nai-guard-pretool.js -> ai-guard-linux hook opencode"]
+        end
+
         WSLCache[("WSL2 本地策略镜像 & 审计/自检缓冲\n~/.config/ai-guard/policy.toml\n~/.local/share/ai-guard/events.db")]
 
         WSLCodex <-->|"PreToolUse 极速裁决"| WSLCodexHook
         WSLAgy <-->|"PreToolUse 极速裁决"| WSLAgyHook
+        WSLOpencode <-->|"Plugin Hook 裁决 (Exit Code 0/1)"| WSLOpencodeHook
         WSLCodexHook -->|"读取策略 / 写入本地缓冲"| WSLCache
         WSLAgyHook -->|"读取策略 / 写入本地缓冲"| WSLCache
+        WSLOpencodeHook -->|"读取策略 / 写入本地缓冲"| WSLCache
     end
 
     HostSvc ==>|"分发探针 / 下发策略 / 增量配置 hooks.json 与 config.toml\n(wsl.exe --distribution <distro> --exec ~/.local/bin/ai-guard-linux ... --json)"| WSLCache
@@ -93,19 +108,19 @@ flowchart TB
 
 | 模块路径 | 核心职责 | 跨环境（Host + WSL2）运行角色 |
 | :--- | :--- | :--- |
-| `apps/desktop` | 运行于 Windows 宿主机的全中文桌面界面，提供统一安全概览、宿主机与 WSL2 双目标切换/聚合视图、策略编辑、审计检索、配置 Diff 确认与 Session 备份管理。 | **仅在 Windows 宿主机运行**，作为用户唯一交互入口。 |
-| `apps/local-service` | 提供统一的 CLI 与服务协调器：在宿主机侧作为主控调度器（管理本机目标并通过 `wsl.exe --exec` 调度 WSL2 目标）；在两边环境内同时承担 `hook codex pre-tool-use` 与 `hook agy pre-tool-use` 极速入口，并提供 `install codex` / `install agy` 事务安装器。 | 同源编译为宿主机 `ai-guard.exe` 与 WSL2 `ai-guard-linux`。 |
-| `packages/agent-adapters` | 封装 Codex 与 Antigravity（AGY 桌面版、IDE 与 `agy` CLI）的多 Agent 适配层：多环境配置发现（`.codex` 与 `.gemini/config/hooks.json`）、Hook 协议解析（Codex JSON 与 AGY ProtoJSON）、工具名归一化（`run_command`、`write_file`、`edit_file`、`call_mcp_tool`）及 Fail-Closed 决策输出。 | 双端共用（含 Windows 与 WSL2 路径/进程探测实现）。 |
+| `apps/desktop` | 运行于 Windows 宿主机的全中文桌面界面，采用 980×640 紧凑管家式视窗、吸顶固定条件栏、独立滚动数据流、系统托盘静默驻留与右键快控，提供 Codex、AGY 与 OpenCode 三大 Agent 对称管理、统一安全概览、策略编辑、审计检索、配置 Diff 确认与 Session 备份管理。 | **仅在 Windows 宿主机运行**，作为用户唯一交互入口。 |
+| `apps/local-service` | 提供统一的 CLI 与服务协调器：在宿主机侧作为主控调度器（管理本机目标并通过 `wsl.exe --exec` 调度 WSL2 目标）；在两边环境内同时承担 `hook codex`、`hook agy` 与 `hook opencode` 极速入口，并提供 `install codex` / `install agy` / `install opencode` 事务安装器。 | 同源编译为宿主机 `ai-guard.exe` 与 WSL2 `ai-guard-linux`。 |
+| `packages/agent-adapters` | 封装 Codex、Antigravity（AGY 桌面版、IDE 与 `agy` CLI）与 OpenCode（`opencode` CLI 与桌面端）的多 Agent 适配层：多环境配置发现、Hook 协议解析（Codex JSON、AGY ProtoJSON 与 OpenCode 单行 JSON）、工具名归一化（Shell 命令、文件修改补丁、MCP 等）及 Fail-Closed 决策输出。 | 双端共用（含 Windows 与 WSL2 路径/进程探测实现）。 |
 | `packages/security` | 纯确定性安全策略引擎：TOML 规则编译校验、同时覆盖 POSIX Shell（`bash`/`sh`）与 Windows Shell（`powershell`/`pwsh`/`cmd`）的高危命令分析、跨平台敏感路径保护、Deny 优先裁决。 | 双端共用，100% 平台无关纯逻辑。 |
-| `packages/backup` | 通用快照备份与 SHA-256 校验引擎：在修改宿主机与 WSL2 的 Codex / AGY 配置文件及清理 Session 前，生成带 SHA-256 的 `manifest.json` 并支持原子恢复。 | 双端共用（内部通过 `#[cfg(windows)]` 与 `#[cfg(unix)]` 封装原子替换与权限）。 |
+| `packages/backup` | 通用快照备份与 SHA-256 校验引擎：在修改宿主机与 WSL2 的 Codex / AGY / OpenCode 配置文件及清理 Session 前，生成带 SHA-256 的 `manifest.json` 并支持原子恢复。 | 双端共用（内部通过 `#[cfg(windows)]` 与 `#[cfg(unix)]` 封装原子替换与权限）。 |
 | `packages/storage` | 管理 SQLite（WAL 模式 + 15ms 超时无锁 `events-fallback.jsonl`）、敏感信息脱敏器（Redactor）以及 WSL2 审计事件向宿主机主库的增量同步归并。 | 宿主机作为主库（Master DB），WSL2 作为本地缓冲库（Edge Buffer）。 |
-| `packages/session` | 承接会话只读治理：以严格只读方式（`SQLITE_OPEN_READ_ONLY`）扫描 Codex（`session_index.jsonl`、SQLite）与 AGY（`transcript.jsonl`、`brain/` 工件），在宿主机桌面端统一呈现并支持一键安全备份。 | 双端共用，宿主机汇总展示。 |
+| `packages/session` | 承接会话只读治理：以严格只读方式扫描 Codex（`session_index.jsonl`、SQLite）、AGY（`transcript.jsonl`、`brain/` 工件）与 OpenCode（`session` 目录），在宿主机桌面端统一呈现并支持一键安全备份。 | 双端共用，宿主机汇总展示。 |
 
 ---
 
 ## 4. 关键跨环境协同机制设计
 
-### 4.1 宿主机主程序如何纳管两套 Codex 环境？
+### 4.1 宿主机主程序如何纳管多智能体与多环境？
 
 系统在领域层定义 `ManagedEnvironment`（受管环境实例）：
 
@@ -122,15 +137,18 @@ pub enum ClientSurface {
     AgyCli,
     AgyDesktopApp,
     AgyIde,
+    OpenCodeCli,
+    OpenCodeDesktopApp,
 }
 
 pub enum AgentKind {
     Codex,
     Antigravity,
+    OpenCode,
 }
 
 pub struct ManagedTarget {
-    pub target_id: String,               // 如 "win-host-codex" 或 "wsl2-Ubuntu-agy"
+    pub target_id: String,               // 如 "win-host-codex"、"win-host-opencode" 或 "wsl2-Ubuntu-agy"
     pub agent_kind: AgentKind,
     pub env_kind: EnvironmentKind,
     pub detected_surfaces: Vec<ClientSurface>,
@@ -235,3 +253,98 @@ sequenceDiagram
 1. **转录解析（`transcript.jsonl`）**：严格以只读流式解析 AGY 的 `transcript.jsonl`，提取会话概要、交互步骤、耗时与工具调用流水；
 2. **工件扫描（`brain/`）**：扫描关联的生成工件（报告、UI 预览、代码片段）；
 3. **快照备份与验签**：调用 `packages/backup` 对会话全量数据进行 tar/zst 压缩打包并记录 SHA-256，支持在桌面端一键核验与导出。
+
+---
+
+### 4.4 OpenCode & opencode CLI 原生插件 Hook 管控架构设计
+
+#### 4.4.1 插件注入体系（Plugin Hook Architecture）
+OpenCode 基于插件化架构扩展工具拦截能力。AI卫士采用自动化插件桥接方式接入：
+- **目录发现**：全局插件目录为 `~/.opencode/plugins/`（Windows 为 `%USERPROFILE%\.opencode\plugins\`，Linux 为 `~/.opencode/plugins/`）；
+- **桥接探针（`ai-guard-pretool.js`）**：
+  在插件目录自动注入 `ai-guard-pretool.js`，监听 `tool.execute.before` 钩子：
+  ```javascript
+  // ai-guard-pretool.js
+  export default {
+    name: "ai-guard-security-hook",
+    hooks: {
+      "tool.execute.before": async (context) => {
+        const payload = JSON.stringify(context);
+        const res = spawnSync("ai-guard", ["hook", "opencode", "pre-tool-use"], {
+          input: payload,
+          encoding: "utf-8",
+        });
+        if (res.status !== 0) {
+          throw new Error("AI卫士安全防火墙阻断：" + (res.stdout || "高危操作已被拦截"));
+        }
+      }
+    }
+  };
+  ```
+- **事务与无损管理**：`ai-guard install opencode` 前自动执行快照备份，安全创建或覆盖插件软链/文件；`ai-guard uninstall opencode` 干净移除探针文件，杜绝残留。
+
+#### 4.4.2 适配器归一化与 Wire 协议
+`packages/agent-adapters` 中的 `OpenCodeHookAdapter` 负责标准 I/O 与退出码转换：
+1. **输入解析（stdin）**：
+   - 限制最大输入 1 MiB，流式解析单行 JSON；
+   - 提取工具名称（`tool`，如 `bash`、`sh`、`write_file`、`edit_file`）及多变入参（`input`、`command`、`path`、`content` 等）；
+   - 归一化映射为通用 `ActionEvent` 并送入 `packages/security` 策略引擎。
+2. **退出码与决策契约**：
+   - 放行：stdout 输出标准 JSON，进程返回 **退出码 0**；
+   - 阻断：stdout 输出带有阻断原因的 JSON，进程返回 **退出码 1**；
+   - **Fail-Closed 熔断**：输入格式损坏、超长、字段缺失或策略引擎异常时，**强制返回退出码 1 并输出阻断原因**，绝不放行。
+
+#### 4.4.3 OpenCode 工具调用拦截全生命周期时序图
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant OC as OpenCode 引擎 (CLI / 桌面)
+    participant Plugin as 插件 ai-guard-pretool.js
+    participant Hook as ai-guard hook opencode
+    participant Sec as packages/security (策略引擎)
+    participant Storage as packages/storage (审计库)
+    participant OS as 操作系统 (Shell / 文件系统)
+
+    OC->>Plugin: 触发 tool.execute.before 钩子
+    Plugin->>Hook: stdin 传入单行 JSON，同步阻塞等待
+    Hook->>Hook: OpenCodeHookAdapter 归一化为 ActionEvent
+    Hook->>Sec: 策略评估 (evaluate_action)
+    alt 命中高危拦截规则 (如 rm -fr / 或读取私钥)
+        Sec-->>Hook: Decision::Deny
+        Hook->>Storage: 写入脱敏审计事件
+        Hook-->>Plugin: stdout 阻断 JSON，进程退出码 = 1
+        Plugin-->>OC: 抛出拦截异常，终止执行流程
+        Note over OC,OS: 零副作用：目标高危命令从未在系统执行！
+    else 判定安全操作
+        Sec-->>Hook: Decision::Allow
+        Hook->>Storage: 写入脱敏审计事件
+        Hook-->>Plugin: stdout 放行 JSON，进程退出码 = 0
+        Plugin-->>OC: 正常放行
+        OC->>OS: 执行工具并获取结果
+    end
+```
+
+#### 4.4.4 会话事件流只读解析与备份
+1. **会话只读索引**：以只读模式索引 OpenCode 的 `session` 目录，流式读取多轮交互数据；
+2. **任务流提取**：提取工具调用时间线、终端输出与代码补丁 Diff；
+3. **事务备份保障**：通过 `packages/backup` 创建含 SHA-256 清单的快照压缩包，防止会话损坏或意外丢失。
+
+---
+
+### 4.5 桌面主控端管家式架构与系统托盘驻留设计
+
+#### 4.5.1 紧凑视窗设计（980×640）
+- 借鉴主流管家式桌面软件，主窗体设定为 980×640 紧凑尺寸，不遮挡主 IDE 开发视窗；
+- 遵循固定吸顶设计：顶部条件筛选栏（搜索框、Agent 筛选标签卡、时间范围等）固定在视窗上方；
+- 数据区域独立垂直平滑滚动，保持列表滚动时操作条件始终可视可点。
+
+#### 4.5.2 后台静默守护与系统托盘（System Tray）
+- **静默拉起**：宿主机桌面端通过标准 Windows 子系统配置编译，启动时彻底消除黑色控制台命令行闪现；
+- **托盘最小化**：关闭窗口时自动隐藏至 Windows 系统托盘区，持续在后台提供就地 Hook 防护能力；
+- **托盘快捷菜单**：右键托盘图标支持“打开主控面板”、“一键自检”、“退出守护”等核心快捷指令。
+
+#### 4.5.3 对称式多智能体看板与四态自检
+- 统一看板以对称卡片方式并行展示 **OpenAI Codex**、**Google Antigravity (AGY)** 与 **OpenCode**；
+- 独立展示各 Agent 的安装路径、当前挂载探针、防护启用状态与真实四态诊断结果（`protected_verified` / `unprotected` 等）；
+- 提供一键沙箱自检（`Self-Test`）与一键启闭，状态变更即刻生效。

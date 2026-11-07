@@ -1,11 +1,11 @@
-# AI卫士（AI Guard）产品需求文档与分阶段研发 PRD（双 Agent 统一管控定稿版）
+# AI卫士（AI Guard）产品需求文档与分阶段研发 PRD（多 Agent 统一管控定稿版）
 
 - **文档编号**：`AG-PRD-V0.1`
-- **版本**：`V0.1-DualAgent`（Windows 宿主机主控 + 宿主机/WSL2 Codex 与 Antigravity / `agy` CLI 统一纳管定稿版）
+- **版本**：`V0.1-MultiAgent`（Windows 宿主机主控 + Codex、Antigravity / `agy` CLI 与 OpenCode / `opencode` CLI 统一纳管定稿版）
 - **日期**：2026-11-07
 - **文档状态**：已确认基线（研发与阶段验收唯一依据）
 - **代码仓库**：`https://github.com/hnlikui5/ai-guard.git`
-- **产品运行形态**：**Windows 宿主机原生桌面应用（主控中心）**，同时纳管 **Codex（桌面版/CLI，Windows 宿主机与 WSL2）** 与 **Antigravity（AGY 桌面版 / `agy` CLI，Windows 宿主机与 WSL2）**
+- **产品运行形态**：**Windows 宿主机原生桌面应用（主控中心）**，同时纳管 **Codex（桌面版/CLI，Windows 宿主机与 WSL2）**、**Antigravity（AGY 桌面版 / `agy` CLI，Windows 宿主机与 WSL2）** 与 **OpenCode（桌面版 / `opencode` CLI）**
 - **主力技术栈**：Rust（跨平台同源编译 Windows `.exe` 与 WSL2 Linux 探针）+ SQLite（宿主机统一主库 + WSL2 缓冲同步）+ Tauri 2 / React / TypeScript（宿主机中文桌面端）
 - **开源许可证**：Apache License 2.0（个人版）
 
@@ -15,7 +15,7 @@
 
 ### 1.1 一句话产品定义
 
-**AI卫士（AI Guard）** 是一款运行在 **Windows 宿主机** 上的 AI 编程 Agent 本地安全防护与运行治理桌面软件，能够**同时发现、保护和管理“宿主机与 WSL2 双环境下的 Codex（桌面应用/CLI）”与“Antigravity（AGY 桌面版 / `agy` CLI）”**，在各自执行节点就地阻断高危操作、在宿主机桌面端统一呈现防护状态与脱敏审计，并提供跨 Agent 与跨环境的会话（Session）只读索引与安全备份能力。
+**AI卫士（AI Guard）** 是一款运行在 **Windows 宿主机** 上的 AI 编程 Agent 本地安全防护与运行治理桌面软件，能够**同时发现、保护和管理“宿主机与 WSL2 双环境下的 Codex（桌面应用/CLI）”、“Antigravity（AGY 桌面版 / `agy` CLI）”及“OpenCode（桌面版 / `opencode` CLI）”**，在各自执行节点就地阻断高危操作、在宿主机桌面端统一呈现防护状态与脱敏审计，并提供跨 Agent 与跨环境的会话（Session）只读索引与安全备份能力。
 
 ### 1.2 相较初始方案包的关键重构与优化（已纳入本 PRD）
 
@@ -71,6 +71,38 @@
 4. **会话转录与工件治理**：
    - 只读解析 `~/.gemini/antigravity/transcript.jsonl` 转录文件与 `brain/<conversation-id>/` 工件目录，在宿主机主控界面上统一提供会话检索、轮次预览与带 SHA-256 校验的快照备份。
 
+### 1.5 面向 OpenCode 与 opencode CLI 的原生插件 Hook 管控体系设计
+
+针对 OpenCode 及其命令行客户端 `opencode`，AI卫士提供原生插件（Plugin Hook）级全链路管控：
+
+1. **插件生命周期挂载（`tool.execute.before` / `execute.before`）**：
+   - OpenCode 原生支持通过用户插件目录（`~/.opencode/plugins/` 或 `<workspace>/.opencode/plugins/`）注入执行前钩子；
+   - AI卫士通过自动化插件桥接脚本 `ai-guard-pretool.js` 进行透明桥接，在任何工具（`bash`、`sh`、`write_file`、`edit_file`）执行前自动调用 `ai-guard hook opencode pre-tool-use`；
+   - 支持一键通过 `ai-guard install opencode` 安装与 `ai-guard uninstall opencode` 干净卸载，绝不破坏用户其它插件。
+2. **极速 Wire 协议与标准退出码裁决**：
+   - 适配 OpenCode 插件标准 I/O 协议：stdin 传入单行 JSON，包含 `tool`、`input`（兼容 `arguments`/`command`/`content` 等多变名字段）及上下文；
+   - 归一化提取工具调用并转译为标准 `ActionEvent`；
+   - stdout 统一返回单行 JSON（含 `decision`、`reason`、`permissionDecision`）；
+   - **退出码契约**：允许执行时退出码为 0；阻断执行时退出码为 1，OpenCode 依据非零退出码立即终止工具调用，确保 OS 端零副作用产生。
+3. **Fail-Closed 异常熔断保护**：
+   - 协议解析异常、输入为空、超长（> 1 MiB）或 JSON 损坏时，严格遵循 Fail-Closed 输出阻断 JSON 并返回非零退出码（1）。
+4. **会话事件流只读解析与备份**：
+   - 严格只读解析 OpenCode `session` 目录下的会话树与事件流，提取工具调用、代码修改补丁与任务上下文，并在宿主机桌面端统一呈现及提供 SHA-256 快照备份。
+
+### 1.6 面向桌面端管家式体验与系统托盘驻留设计
+
+参考主流管家式桌面安全防护软件的人机交互设计，AI卫士桌面端确立如下界面与交互规格：
+
+1. **紧凑主窗体与固定视窗比例（980×640）**：
+   - 避免默认全屏或过大视窗遮挡开发者 IDE 编码区域，默认以 980×640 紧凑尺寸居中呈现，支持适度缩放并保持界面响应式紧凑排版。
+2. **条件筛选吸顶固定与数据区域平滑滚动**：
+   - 在“安全概览”、“多 Agent 管理”、“风险事件流水”、“对话与备份工作区”等数据密集型页面，顶部搜索框、Agent 筛选标签（`全部` / `Codex` / `AGY` / `OpenCode`）、时间范围等过滤操作栏采用固定吸顶（Sticky / Fixed）；
+   - 下方列表与数据卡片区域独立平滑滚动，杜绝筛选操作栏随内容滚出视窗的割裂感。
+3. **静默启动与系统托盘常驻守护**：
+   - 启动宿主机防护服务与桌面端时，禁止弹出黑框命令行终端（CMD / PowerShell 窗口），做到静默平滑运行；
+   - 窗口关闭时默认最小化至 Windows 系统托盘（Notification Tray），托盘图标提供右键快捷菜单（打开控制台、一键自检、暂停保护、退出程序）；
+   - 支持开机静默自启并常驻后台。
+
 ---
 
 ## 2. 产品核心原则与安全红线
@@ -115,13 +147,17 @@
 | **FR-015** | `local-service` | 双环境隔离端到端自检向导 | P0 | Phase 4 | `ai-guard self-test codex --target <host\|wsl2:distro> --isolated` 在目标环境的临时隔离目录执行真实 Allow/Deny 验证并持久化自检证据 |
 | **FR-016** | `session` / `backup` | 宿主机与 WSL2 双环境 Session 统一只读索引与备份 | P1 | Phase 4B | 在宿主机统一只读解析并展示宿主机 `C:\Users\<User>\.codex`（750MB+ 会话库）与 WSL2 `~/.codex` 会话列表与详情；支持跨环境一键创建带 SHA-256 校验的会话备份 |
 | **FR-017** | `desktop` | 宿主机双目标调度器（`TargetManager`） | P0 | Phase 5 | 宿主机 Tauri 后端直连管理宿主机目标（`WindowsHost`），并通过受控 `argv` 白名单 `wsl.exe --distribution <distro> --exec` 桥接管理 WSL2 目标（`Wsl2Distro`），防命令注入 |
-| **FR-018** | `desktop` | 全中文宿主机主控桌面界面（六大页面） | P0 | Phase 5 | 交付安全概览（双环境汇总）、Agent 与环境管理（宿主机 + WSL2）、安全策略、统一风险事件、防护诊断/安装/Session 备份、设置与隐私六大中文页面 |
+| **FR-018** | `desktop` | 全中文宿主机管家式主控桌面界面（六大页面 + 托盘常驻） | P0 | Phase 5 | 交付 980×640 紧凑尺寸、吸顶固定条件栏、滚动数据流、系统托盘常驻守护、无黑框终端启动及安全概览、Agent 管理、安全策略、统一风险事件、会话工作区、设置与隐私六大中文页面 |
 | **FR-019** | `desktop` | 独立运行保障与子环境断连诚实展示 | P0 | Phase 5 | 未开启 WSL2 时宿主机防护与 UI 100% 独立正常工作；当某 WSL2 发行版未启动或失联时，仅该 WSL2 目标卡片显示“状态未知”，绝不沿用旧绿灯缓存 |
 | **FR-020** | 全局文档与合规 | 保护边界声明与开源发布门禁 | P0 | Phase 5 | 明确展示支持范围与已知盲区（如未覆盖 Hosted Tools、同权限用户绕过限制），通过全部安全与许可证检查 |
 | **FR-AGY-001** | `agent-adapters` | Antigravity (AGY) & `agy` CLI 目标与工作区自动发现 | P0 | Phase 5.5 | 自动发现全局配置（Linux/WSL2 `~/.gemini/config/`，Windows `%USERPROFILE%\.gemini\config\`）与工作区级（`<workspace>/.agents/`）配置，支持探测 AGY 桌面版、IDE 与 `agy` CLI |
 | **FR-AGY-002** | `agent-adapters` / `security` | AGY 原生 ProtoJSON `PreToolUse` Hook 协议适配与拦截 | P0 | Phase 5.5 | 解析 stdin camelCase ProtoJSON，将 `run_command`、`write_file`、`edit_file`、`call_mcp_tool` 转换为通用 `ActionEvent`；Fail-Closed 默认阻断，输出标准 `{"decision":"allow"\|"deny"\|"ask"}` JSON |
 | **FR-AGY-003** | `session` / `backup` | AGY 转录流水（`transcript.jsonl`）与工件只读索引与备份 | P1 | Phase 5.5 | 严格只读解析 AGY 转录流、步骤序号、模型与对话内容，扫描 `brain/<conv_id>/` 工件，支持一键创建 SHA-256 校验的快照备份 |
 | **FR-AGY-004** | `desktop` | 宿主机多 Agent（Codex + AGY）协同管控看板与 Hook 事务安装 | P0 | Phase 5.5 | 宿主机主控界面升级支持 Codex 与 AGY 并行卡片展示、四态防护诊断、一键增量注册/安全卸载 `hooks.json`、事件来源过滤（Codex/AGY）与一键自检 |
+| **FR-OPCD-001** | `agent-adapters` | OpenCode & `opencode` CLI 目标与插件工作区自动发现 | P0 | Phase 5.6 | 自动发现全局（`~/.opencode/plugins/`）与项目级（`<workspace>/.opencode/plugins/`）插件目录，探测 `opencode` CLI 与桌面端应用 |
+| **FR-OPCD-002** | `agent-adapters` / `security` | OpenCode 原生插件 Hook 协议适配与退出码拦截 | P0 | Phase 5.6 | 解析 stdin 单行 JSON，归一化 `bash`、`sh`、`write_file`、`edit_file` 等工具，输出标准退出码 0（放行）/ 1（阻断），Fail-Closed 默认阻断 |
+| **FR-OPCD-003** | `session` / `backup` | OpenCode 会话事件流只读解析与备份 | P1 | Phase 5.6 | 严格只读索引 OpenCode `session` 目录，提取任务步骤与代码补丁事件流，支持一键创建 SHA-256 快照备份 |
+| **FR-OPCD-004** | `desktop` | 宿主机三大 Agent（Codex + AGY + OpenCode）协同管控看板与托盘静默运行 | P0 | Phase 5.6 | 升级三 Agent 对称展示卡片、980×640 紧凑视窗、吸顶条件过滤、系统托盘静默守护与一键沙箱自检 |
 
 ---
 
@@ -135,7 +171,8 @@ flowchart LR
     P3 --> P4["Phase 4 (M5 + M1 迁移)\n宿主机统一审计库、WSL2 归并\n与双环境 Session 只读保护"]
     P4 --> P5["Phase 5 (M6+M7)\nWindows 宿主机 Tauri 2 主控端\n双目标调度与 V0.1 发布"]
     P5 --> P55["Phase 5.5\nAntigravity (AGY) & agy CLI\n全链路原生 Hook 管控与治理"]
-    P55 --> P6["Phase 6 (V0.2+ / M8+M9)\n多 Agent 扩展、OS 沙箱\n与企业版控制平面"]
+    P55 --> P56["Phase 5.6\nOpenCode & opencode CLI\n全链路原生 Hook 管控与治理"]
+    P56 --> P6["Phase 6 (V0.2+ / M8+M9)\nClaude Code、OS 沙箱\n与企业版控制平面"]
 ```
 
 ---
@@ -368,17 +405,59 @@ flowchart LR
 - 单元测试与 E2E 验证脚本：`tests/e2e_agy_pre_tool_use.rs`
 
 #### 4.5.5.4 阶段验收门禁（Phase 5.5 Gate）
-- [ ] **协议兼容测试**：涵盖 `run_command`、`write_file`、`edit_file`、`call_mcp_tool` 四类核心工具调用，正向合法输入 100% 返回 `decision: "allow"`，高危命令（如 `rm -rf /`、读取 `.ssh/id_rsa`）100% 返回 `decision: "deny"`。
-- [ ] **Fail-Closed 异常防护测试**：输入畸形 JSON、截断输入、超大体积 JSON（> 2 MiB），系统 100% 安全返回 `deny`，0 panic，0 异常放行。
-- [ ] **配置零破坏安装与卸载测试**：在包含用户既有 Hook 的 `hooks.json` 模拟环境中执行 `install` 与 `uninstall`，非 AI卫士配置项 100% 保持完好，卸载后完全恢复原样。
-- [ ] **桌面端与只读备份闭环**：在桌面 UI 中成功显示 AGY 状态卡片，能列出 AGY 会话并成功完成带 SHA-256 校验的会话备份与恢复校验。
+- [x] **协议兼容测试**：涵盖 `run_command`、`write_file`、`edit_file`、`call_mcp_tool` 四类核心工具调用，正向合法输入 100% 返回 `decision: "allow"`，高危命令（如 `rm -rf /`、读取 `.ssh/id_rsa`）100% 返回 `decision: "deny"`。
+- [x] **Fail-Closed 异常防护测试**：输入畸形 JSON、截断输入、超大体积 JSON（> 2 MiB），系统 100% 安全返回 `deny`，0 panic，0 异常放行。
+- [x] **配置零破坏安装与卸载测试**：在包含用户既有 Hook 的 `hooks.json` 模拟环境中执行 `install` 与 `uninstall`，非 AI卫士配置项 100% 保持完好，卸载后完全恢复原样。
+- [x] **桌面端与只读备份闭环**：在桌面 UI 中成功显示 AGY 状态卡片，能列出 AGY 会话并成功完成带 SHA-256 校验的会话备份与恢复校验。
 
 ---
 
-### Phase 6（对应 M8 + M9，V0.2+ 演进）：多 Agent 适配、OS 沙箱与企业版控制平面
+### Phase 5.6：OpenCode 与 opencode CLI 全链路原生 Hook 管控与治理 PRD
+
+#### 4.5.6.1 阶段目标
+在 Codex 与 Antigravity (AGY) 稳定纳管的基础上，基于 OpenCode 插件扩展规范（`tool.execute.before` / `execute.before`），实现对 **OpenCode 桌面端** 与 **`opencode` CLI** 的全生命周期管控。落实标准退出码（0 放行 / 1 阻断）强拦截与 Fail-Closed 熔断、会话事件流只读解析与 SHA-256 安全备份、桌面控制中心三 Agent 对称看板及系统托盘静默驻留。
+
+#### 4.5.6.2 功能与研发任务说明
+1. **P5.6-T1：`packages/agent-adapters` 之 `OpenCodeHookAdapter` 实现与 Wire 协议映射**
+   - 实现 OpenCode 标准单行 JSON 适配器（限制 1 MiB）：
+     - 解析 `tool`、`input`（兼容包含 `command`、`arguments`、`path`、`content` 等结构）；
+     - 归一化为通用 `ActionEvent`（`ExecuteShellCommand`、`WriteFile`、`FilePatch` 等）；
+     - 将策略裁决序列化为单行 JSON：`{"decision": "allow" | "deny", "reason": "...", "permissionDecision": "allow" | "deny"}`；
+     - **Fail-Closed 异常保护**：输入损坏、超长或解析失败时，默认返回 `deny` 并以非零退出码（1）退出。
+2. **P5.6-T2：`apps/local-service` 之插件安装器与 CLI 执行入口**
+   - 增加 CLI 极速执行入口：`ai-guard hook opencode pre-tool-use`；
+   - 实现 OpenCode 插件桥接脚本 `ai-guard-pretool.js`：
+     - 实现 `tool.execute.before` 钩子，通过同步进程调用 `ai-guard hook opencode pre-tool-use`；
+     - 收到非零退出码时主动抛出异常阻断工具执行，确保零副作用产生；
+   - 实现插件事务安装与卸载：`ai-guard install opencode` 与 `ai-guard uninstall opencode`，支持自动探测插件目录、创建备份并无损移除。
+3. **P5.6-T3：`packages/session` 之 OpenCode 会话事件流只读索引**
+   - 严格只读索引 OpenCode `session` 目录；
+   - 解析多轮会话交互、工具执行与代码修改记录；
+   - 联动 `packages/backup` 支持一键创建带 SHA-256 校验的快照备份。
+4. **P5.6-T4：`apps/desktop` 管家式控制中心升级与系统托盘驻留**
+   - 桌面看板升级支持 **OpenAI Codex**、**Google Antigravity (AGY)** 与 **OpenCode** 三大 Agent 对称展示与一键启闭；
+   - 会话与审计列表增加 OpenCode 专属过滤标签与状态徽章；
+   - 采用 980×640 紧凑尺寸、吸顶固定条件栏与滚动数据区；
+   - 支持 Windows 系统托盘常驻与无控制台黑框静默启动。
+
+#### 4.5.6.3 交付产物清单
+- `docs/OPENCODE_HOOK_CONTRACT.md`（权威 Wire Protocol 契约）
+- `packages/agent-adapters/src/opencode_adapter.rs`
+- `apps/local-service/src/cli.rs` 与 `apps/local-service/src/main.rs`（OpenCode hook、install、self-test 支持）
+- `apps/desktop/dist/index.html`（OpenCode 看板卡片与托盘交互）
+
+#### 4.5.6.4 阶段验收门禁（Phase 5.6 Gate）
+- [x] **协议与退出码拦截测试**：覆盖合法命令（放行且退出码 0）与高危命令（阻断且退出码 1），验证 OpenCode 零副作用；
+- [x] **Fail-Closed 异常测试**：畸形 JSON、截断输入与超限输入 100% 阻断且退出码 1；
+- [x] **插件安装与干净卸载测试**：插件注入与移除幂等安全，不破坏其它扩展；
+- [x] **三大 Agent 协同与托盘验收**：桌面看板同时正常管理 Codex、AGY 与 OpenCode，支持托盘静默运行。
+
+---
+
+### Phase 6（对应 M8 + M9，V0.2+ 演进）：多 Agent 扩展、OS 沙箱与企业版控制平面
 
 - **Phase 6A（V0.2 个人版增强）**：
-  - 接入 **Claude Code** 与 **OpenCode**（同样支持宿主机与 WSL2 双环境探测与就地 Hook 拦截）。
+  - 接入 **Claude Code**（同样支持宿主机与 WSL2 双环境探测与就地 Hook 拦截，OpenCode 已在 Phase 5.6 完成交付）。
   - 完整版跨 Agent Session 全文搜索、恢复冲突预览与安全恢复。
   - 引入 **nono / Linux Landlock**（WSL2 侧）及 **Windows Job Object / 受限令牌**（宿主机侧）沙箱 PoC，对文件读写白名单与网络外传提供 OS 级强制隔离验证。
 - **Phase 6B（V1.0 企业版，独立私有仓库 `ai-guard-enterprise`）**：
