@@ -17,7 +17,7 @@ use ai_guard_security::{
     default_policy_engine, redact_secrets, ActionEvent, ActionKind, ClientSurface, EnvironmentKind,
     PolicyEngine,
 };
-use ai_guard_session::backup_codex_session;
+use ai_guard_session::{backup_codex_session, get_codex_session_detail};
 use ai_guard_storage::{AuditStore, EventQueryFilter, ExportFormat};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -262,8 +262,10 @@ fn route_api_request(
             (
                 200,
                 json!({
+                    "ok": true,
                     "overall_passed": all_passed,
                     "runs": runs,
+                    "bootstrap": build_bootstrap_json(cfg),
                 }),
             )
         }
@@ -462,7 +464,59 @@ fn route_api_request(
             );
             let bstore = crate::resolve_backup_store(cfg.backup_dir.as_deref());
             match backup_codex_session(&req.target_id, &codex_home, &req.session_id, &bstore) {
-                Ok(rep) => (200, serde_json::to_value(rep).unwrap_or_else(|_| json!({}))),
+                Ok(rep) => (
+                    200,
+                    json!({
+                        "ok": true,
+                        "report": rep,
+                        "bootstrap": build_bootstrap_json(cfg),
+                    }),
+                ),
+                Err(e) => (
+                    400,
+                    json!({ "ok": false, "error_code": e.code(), "detail": e.to_string() }),
+                ),
+            }
+        }
+        ("GET", "/api/sessions/detail") => {
+            let tid = query
+                .get("target")
+                .map(|s| s.as_str())
+                .unwrap_or("wsl2:Ubuntu");
+            let sid = query.get("id").map(|s| s.as_str()).unwrap_or("");
+            let codex_home = crate::resolve_codex_home_for_target(tid, InstallScope::User, None);
+            match get_codex_session_detail(tid, &codex_home, sid) {
+                Ok(detail) => (200, json!({ "ok": true, "detail": detail })),
+                Err(e) => (
+                    400,
+                    json!({ "ok": false, "error_code": e.code(), "detail": e.to_string() }),
+                ),
+            }
+        }
+        ("POST", "/api/backups/restore") => {
+            #[derive(Deserialize)]
+            struct RestoreReq {
+                backup_id: String,
+            }
+            let req: RestoreReq = match serde_json::from_slice(body) {
+                Ok(r) => r,
+                Err(e) => {
+                    return (
+                        400,
+                        json!({ "ok": false, "error_code": "AG-API-BAD-JSON", "detail": e.to_string() }),
+                    )
+                }
+            };
+            let bstore = crate::resolve_backup_store(cfg.backup_dir.as_deref());
+            match bstore.restore_backup(&req.backup_id) {
+                Ok(manifest) => (
+                    200,
+                    json!({
+                        "ok": true,
+                        "manifest": manifest,
+                        "bootstrap": build_bootstrap_json(cfg),
+                    }),
+                ),
                 Err(e) => (
                     400,
                     json!({ "ok": false, "error_code": e.code(), "detail": e.to_string() }),
