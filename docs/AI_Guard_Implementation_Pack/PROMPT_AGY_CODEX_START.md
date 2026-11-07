@@ -4,11 +4,14 @@
 
 ## 必须先阅读
 
-- `docs/AI_Guard_Full_Technical_Design_V1.0.md`
-- `docs/IMPLEMENTATION_BACKLOG_V1.0.md`
-- `docs/AI卫士_产品需求文档_PRD_V0.1.md`
-- `docs/AGENT_DEVELOPMENT_PROTOCOL.md`
-- 根目录已存在的 `AGENTS.md`、`README.md`、`Cargo.toml`、Git 历史
+- `docs/PRD_V0.1.md`（分阶段开发 PRD 优化定稿版）
+- `docs/ARCHITECTURE.md`（系统架构设计）
+- `docs/AI_Guard_Implementation_Pack/docs/AI_Guard_Full_Technical_Design_V1.0.md`
+- `docs/AI_Guard_Implementation_Pack/docs/IMPLEMENTATION_BACKLOG_V1.0.md`
+- `docs/AI_Guard_Implementation_Pack/docs/AI卫士_产品需求文档_PRD_V0.1.md`
+- `docs/AI_Guard_Implementation_Pack/docs/AGENT_DEVELOPMENT_PROTOCOL.md`
+- `docs/decisions/` 下的 ADR-0001 ～ ADR-0003
+- 根目录已存在的 `AGENTS.md`、`README.md`、`LICENSE`、Git 历史
 
 ## 研发路线
 

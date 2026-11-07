@@ -21,21 +21,21 @@
 **依赖：** 已初始化仓库。  
 **不包含：** 修改用户级 Codex 配置、安装 Hook 到真实环境。
 
-### M0-01 核实工程现状
-- 工作：读取 `Cargo.toml`、工作区、Git 状态、已有 `AGENTS.md`、文档与参考仓库；检查 Codex/Rust/Node/WSL2 版本；识别是否存在旧 M1 代码可迁移。
-- 输出：`docs/BASELINE.md`（实际版本、目录树、风险、可执行命令）、`docs/COMPATIBILITY.md` 初始空矩阵。
+### M0-01 核实工程现状与安装 Rust 工具链
+- 工作：读取工作区、Git 状态、已有 `AGENTS.md`、文档与参考仓库；检查 `codex-cli 0.160.1`/Node/WSL2 版本；安装 WSL2 Rust stable 工具链（`rustc`/`cargo`/`clippy`/`rustfmt`）并创建 `rust-toolchain.toml`；识别旧 M1 代码迁移边界。
+- 输出：`rust-toolchain.toml`、`docs/BASELINE.md`（实际版本、目录树、风险、可执行命令）、`docs/COMPATIBILITY.md` 初始空矩阵。
 - 验收：不破坏原文件；报告明确“已存在”与“拟新增”；版本从真实命令读取。
 
-### M0-02 固定 Codex Hook 协议
-- 工作：阅读官方 Hooks 文档与当前本机 Codex 的实际 Hook 支持；保存已去敏的测试输入输出与版本信息；验证非托管 Hook 的信任流。
+### M0-02 固定 Codex 0.160.1 Hook 协议与 Daemon 交互
+- 工作：阅读官方 Hooks 文档并在隔离临时目录（`CODEX_HOME=/tmp/...`）实测本机 `codex-cli 0.160.1` 的实际 Hook 支持（含 `Bash`、`unified_exec`、`write_stdin`、`apply_patch`、MCP 工具名映射及 `app-server-daemon` 刷新行为）；保存已去敏的测试输入输出与版本信息；验证非托管 Hook 的信任流。
 - 输出：`tests/fixtures/codex/`、`docs/CODEX_HOOK_CONTRACT.md`、协议版本证据。
-- 验收：能说明哪些工具在当前版本的 PreToolUse 内、哪些不能、Hook 未信任如何表现；尚不宣称真实阻断。
+- 验收：能说明哪些工具在当前版本的 PreToolUse 内、哪些不能、Hook 未信任及后台 daemon 存在时如何表现；尚不宣称真实阻断。
 - 暂停条件：Codex 版本不可用或不能验证协议时保留不确定项，**不能凭参考文档猜测运行结果**。
 
 ### M0-03 锁定安全边界 ADR
-- 工作：确认首发只支持 WSL2 Codex CLI、不是 EDR/全网 DLP，App Server 延后；明确安全状态的四类定义。
-- 输出：`docs/adr/ADR-001-security-first.md`、`docs/adr/ADR-002-wsl-deployment.md`。
-- 验收：后续 Agent 不再将 Session 放到核心安全工作之前。
+- 工作：确认首发只支持 WSL2 Codex CLI、不是 EDR/全网 DLP；明确“安全主线优先 + `packages/backup` 事务备份前置 + Phase 4B 汇入 M1 Session 只读保护”策略；明确安全状态的四类定义。
+- 输出：`docs/decisions/0001-tech-stack-and-license.md`、`docs/decisions/0002-security-first-and-phased-session.md`、`docs/decisions/0003-wsl2-execution-and-desktop-bridge.md`。
+- 验收：后续 Agent 严格遵循安全主线优先，不跳过真实拦截门禁。
 
 **M0 Gate：** `BASELINE.md`、`COMPATIBILITY.md`、Hook 契约和测试计划齐全；只读检查完成。
 
@@ -112,9 +112,9 @@
 - 工作：识别用户级/项目级 Hooks；JSON/TOML 保留已有项；产生仅由用户确认的变更差异。
 - 验收：已存在第三方 Hook 不丢失；安装前不修改文件。
 
-### M4-02 安装/卸载原子性与冲突处理
-- 工作：备份原配置、内容 Hash、临时文件写入、权限校验、原子替换；卸载仅移除本产品标记段。
-- 验收：模拟断电/写入失败/冲突；旧配置可恢复；不覆盖用户新变更。
+### M4-02 基于 `packages/backup` 的安装/卸载原子性与冲突处理
+- 工作：在 `packages/backup` 实现带 SHA-256 `manifest.json` 的快照备份、完整性校验与原子恢复；修改 Codex 配置前强制备份原配置、临时文件写入、权限校验、原子替换；卸载仅移除本产品标记段。
+- 验收：模拟断电/写入失败/备份篡改校验拒止/冲突；旧配置可恢复；不覆盖用户新变更。
 
 ### M4-03 受管启动 `ai-guard run codex`
 - 工作：预检 Hook 路径、配置启用、规则版本、最近自检，失败则拒绝代启动；不通过命令拼接执行 Codex。
@@ -128,9 +128,13 @@
 
 ## M5：本地安全事件与质量闭环
 
-### M5-01 SQLite Schema 与迁移
-- 工作：按技术方案创建 `security_events`, `policy_revisions`, `integration_state`, `self_test_runs`；权限、索引与保留策略。
-- 验收：schema 升级、数据库锁定、数据损坏、并发插入均有测试或明确应对策略。
+### M5-01 SQLite Schema、WAL 与 15ms 超时无锁 Fallback
+- 工作：按技术方案在 `packages/storage` 创建 `security_events`, `policy_revisions`, `integration_state`, `self_test_runs`；开启 WAL 模式与 `busy_timeout = 15ms`；若写库锁超时或失败，立即输出 Hook 协议结果并将脱敏事件追加至 `events-fallback.jsonl`。
+- 验收：schema 升级、数据库锁定 15ms 熔断降级、数据损坏、并发插入均有测试，绝不因写库阻塞引发 Hook 超时。
+
+### M5-05（Phase 4B 扩展）M1 Codex Session 只读索引与安全备份
+- 工作：在安全主线（M1~M5-04）通过后，于 `packages/session` 对接本机 `~/.codex/session_index.jsonl` 与 `thread_history_1.sqlite`（强制只读打开），结合 `packages/backup` 提供会话列表、详情查询与带 SHA-256 校验的快照备份。
+- 验收：对 `~/.codex` 会话目录零修改，备份与校验闭环测试通过。
 
 ### M5-02 脱敏审计、分页与导出
 - 工作：Hook 记录最小化事件；事件查询支持限制/分页/过滤，脱敏 JSON/CSV 导出。

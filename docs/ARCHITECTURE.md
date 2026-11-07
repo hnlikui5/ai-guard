@@ -2,132 +2,111 @@
 
 ## 1. 架构设计目标与原则
 
-AI卫士采用**模块化单体架构（Modular Monolith）**，优先保障个人版在 Windows + WSL2 本地环境中的独立、轻量、可靠运行，同时在模块边界上为未来多 Agent 扩展与企业版演进预留清晰接口。
+AI卫士采用**模块化单体架构（Modular Monolith，基于 Rust Cargo Workspace）**，优先保障个人版在 Windows + WSL2 本地环境中的独立、轻量、可靠运行，同时在模块边界上为多 Agent 扩展与企业版演进预留清晰接口。
 
 ### 核心架构原则
 
-1. **本地优先与零重型依赖**：个人版所有核心能力（策略裁决、会话索引、备份恢复、审计存储）均在用户本地闭环完成，不依赖外部云端服务、消息队列或容器集群。
-2. **严格分层与单向依赖**：UI 界面层不直接穿透访问底层文件或数据库；基础设施层细节不反向污染核心领域逻辑。
-3. **适配与内核解耦**：Agent 接入协议（如 Codex App Server）与内部安全策略评估、通用 Session 管理解耦，确保未来新增 Claude Code、OpenCode 时无需重构安全内核与存储层。
-4. **默认安全与失败可控（Fail-Closed）**：安全拦截链路出现任何解析异常、通信中断或审批超时，一律按阻断或人工确认处理，杜绝异常放行。
-5. **只读优先与先备后改**：对 Agent 内部会话数据默认只读采集；任何清理、恢复或配置重写操作强制前置备份与完整性校验。
+1. **安全拦截优先与零重型依赖**：个人版所有核心能力（Hook 执行前策略裁决、配置与会话备份恢复、脱敏审计存储、环境诊断）均在用户本地闭环完成，不依赖外部云端服务、消息队列或容器集群。
+2. **靠近执行侧的无守护进程（Daemonless）热路径**：`ai-guard hook codex pre-tool-use` 直接运行在 WSL2 Ubuntu（Codex 真实执行环境）内，单次调用即可独立读取本地可信策略快照完成判定，桌面 UI 关闭不影响安全拦截生效。
+3. **严格分层与单向依赖**：桌面 UI 界面层仅通过受控白名单命令桥接访问本地服务能力，不直接穿透访问底层文件或 SQLite 数据库；基础设施层细节不反向污染核心领域逻辑。
+4. **适配与内核解耦**：Agent 接入协议（`packages/agent-adapters`）与内部确定性安全策略引擎（`packages/security`）、通用 Session 管理（`packages/session`）解耦。
+5. **诚实安全边界与 Fail-Closed**：
+   - 在已进入 Rust Hook 进程且能返回合法协议的范围内，任何解析失败、策略损坏或未知输入均显式返回 `permissionDecision = "deny"`（Fail-Closed）。
+   - 严格区分 `Observe（观察）`、`Hook Deny（协议层拒绝）` 与 `Sandbox Enforcement（内核强制隔离）`，通过四态状态机（`protected_verified` / `partially_protected` / `unprotected` / `unknown`）如实呈现保护范围。
+6. **只读优先与先备后改**：对 Agent 内部会话数据（如 `~/.codex` 下的 JSONL 与 SQLite）强制只读访问；任何修改用户配置或清理会话的操作强制前置调用 `packages/backup` 完成快照备份与 SHA-256 完整性校验。
 
 ---
 
 ## 2. 系统分层架构
 
-系统自顶向下划分为三层：**应用层（Application Layer）**、**业务服务层（Business Service Layer）** 与 **基础设施层（Infrastructure Layer）**。
+系统自顶向下划分为三层：**应用层（Application Layer）**、**业务服务与核心域层（Core & Service Layer）** 与 **基础设施层（Infrastructure Layer）**。
 
 ```mermaid
 flowchart TD
-    subgraph AppLayer["1. 应用层 (apps/desktop)"]
-        UI["中文桌面管理界面"]
-        StatusView["Agent 状态展示"]
-        SecConsole["安全策略与实时审批面板"]
-        SessionView["Session 检索与管理视图"]
-        ConfigView["本地配置与环境诊断"]
+    subgraph WinHost["Windows 宿主机 · 应用层 (apps/desktop)"]
+        UI["Tauri 2 + React + TypeScript 中文管理界面\n(概览 / Agent / 策略 / 事件 / 诊断安装 / 设置)"]
+        Bridge["Tauri Rust Command 白名单桥接\n(wsl.exe --distribution <distro> --exec ai-guard ... --json)"]
+        UI --> Bridge
     end
 
-    subgraph ServiceLayer["2. 业务服务层 (apps/local-service & packages/*)"]
-        LocalHost["本地宿主服务 (apps/local-service)"]
-        AdapterSvc["Agent 适配服务 (packages/agent-adapters)"]
-        SecuritySvc["安全策略与审批引擎 (packages/security)"]
-        SessionSvc["Session 生命周期服务 (packages/session)"]
-        BackupSvc["备份恢复与校验服务 (packages/backup)"]
-        AuditSvc["本地安全审计服务"]
+    subgraph WSL2Env["WSL2 Ubuntu · 业务服务与核心域层 (apps/local-service & packages/*)"]
+        CLI["ai-guard CLI & Hook Runner\n(apps/local-service)"]
+        Adapter["Agent 适配层 (packages/agent-adapters)\nCodex PreToolUse / PermissionRequest / PostToolUse"]
+        SecEngine["确定性安全策略引擎 (packages/security)\nAllow / Deny / Observe 规则匹配与风险解释"]
+        BackupMgr["快照备份与 SHA-256 校验 (packages/backup)\n配置事务回滚 & Session 备份"]
+        SessionMgr["Session 只读索引管理 (packages/session)\n承接 M1 会话浏览与归档"]
     end
 
-    subgraph InfraLayer["3. 基础设施层 (packages/storage & Runtime Integration)"]
-        SQLiteStore["SQLite 持久化存储 (packages/storage)"]
-        LocalFS["本地文件系统受控访问"]
-        CodexIntegration["Codex App Server / Hook 集成"]
-        WSLBridge["Windows / WSL2 跨环境适配层"]
-        SecRuntime["安全运行时隔离与规则库"]
+    subgraph InfraLayer["WSL2 Ubuntu · 基础设施与运行环境层 (packages/storage & Codex Runtime)"]
+        CodexCLI["codex-cli (0.160.1+)\nHooks + App-Server-Daemon + Native Sandbox"]
+        SQLiteStore["SQLite 脱敏审计与状态库 (packages/storage)\nWAL 模式 + 15ms 超时无锁 Fallback (events-fallback.jsonl)"]
+        PolicyFS["本地受控配置与可信策略快照\n(~/.config/ai-guard/policy.toml)"]
+        CodexHome["Codex 配置与会话目录 (~/.codex/)\nconfig.toml / hooks.json / session_index.jsonl / *.sqlite"]
     end
 
-    UI --> LocalHost
-    StatusView --> LocalHost
-    SecConsole --> LocalHost
-    SessionView --> LocalHost
-    ConfigView --> LocalHost
+    Bridge <-->|"独立 argv + 版本化 JSON 契约"| CLI
+    CodexCLI <-->|"stdin Hook JSON / stdout Deny|Allow"| CLI
+    CLI --> Adapter
+    CLI --> SecEngine
+    CLI --> BackupMgr
+    CLI --> SessionMgr
 
-    LocalHost --> AdapterSvc
-    LocalHost --> SecuritySvc
-    LocalHost --> SessionSvc
-    LocalHost --> BackupSvc
-    LocalHost --> AuditSvc
-
-    AdapterSvc --> SecuritySvc
-    SessionSvc --> BackupSvc
-    SecuritySvc --> AuditSvc
-
-    AdapterSvc --> CodexIntegration
-    AdapterSvc --> WSLBridge
-    SecuritySvc --> SecRuntime
-    SessionSvc --> SQLiteStore
-    SessionSvc --> LocalFS
-    BackupSvc --> LocalFS
-    BackupSvc --> SQLiteStore
-    AuditSvc --> SQLiteStore
+    Adapter --> SecEngine
+    SecEngine --> PolicyFS
+    CLI --> SQLiteStore
+    BackupMgr --> CodexHome
+    BackupMgr --> PolicyFS
+    SessionMgr -->|"严格只读 (OPEN_READ_ONLY)"| CodexHome
+    SessionMgr --> BackupMgr
 ```
 
 ---
 
-## 3. 核心模块职责与边界
+## 3. 核心模块职责与依赖边界
 
-### 3.1 应用层
-
-| 模块路径 | 核心职责 | 架构边界约束 |
-| :--- | :--- | :--- |
-| `apps/desktop` | 提供全中文桌面 UI、Agent 状态面板、拦截弹窗审批、Session 浏览检索、备份恢复操作及本地设置。 | 仅通过本地受控 API 与 `apps/local-service` 通信；严禁直接读写 Agent 数据目录或直接操作 SQLite。 |
-
-### 3.2 业务服务层
-
-| 模块路径 | 核心职责 | 架构边界约束 |
-| :--- | :--- | :--- |
-| `apps/local-service` | 本地后台守护进程，负责聚合内部各业务包能力，向桌面端提供统一接口，并协调跨环境（Windows/WSL2）通信与审计记录落盘。 | 仅监听本地回路或受控管道，不暴露公网端口。 |
-| `packages/agent-adapters` | 封装具体 Agent 的协议对接与状态探测（V0.1 针对 Codex App Server 及本地会话目录只读探测），将 Agent 动作转换为统一内部事件。 | 不包含具体安全规则判断；不直接管理通用数据库 Schema。 |
-| `packages/security` | 安全风险分类、策略规则匹配（Allow / Prompt / Deny）、人工审批等待队列、默认安全（Fail-Closed）裁决与审计事件生成。 | 与具体 Agent 的 Hook 实现解耦，仅接收标准化动作上下文并输出裁决结果。 |
-| `packages/session` | Session 原始文件安全读取、结构化解析、元数据与全文索引构建、会话检索及归档清理。 | 对活跃 Session 坚持只读访问；执行删除或覆盖前必须调用 `packages/backup`。 |
-| `packages/backup` | 提供 Session 及关键配置的快照创建、SHA-256 完整性校验、原子恢复与备份轮转清理。 | 恢复前强制验证校验和，校验不通过立即中止并告警。 |
-
-### 3.3 基础设施层
-
-| 模块路径 | 核心职责 | 架构边界约束 |
-| :--- | :--- | :--- |
-| `packages/storage` | 统一管理本地 SQLite 数据库连接、Schema 迁移、事务控制与本地受控目录结构（索引库、审计表、备份元数据）。 | 向上层提供清晰的数据访问接口，屏蔽底层存储细节。 |
-| 运行时与跨环境适配 | 包含 Codex App Server 通信客户端、Windows 与 WSL2 路径转换（如 `/mnt/c/...` 与 `\\wsl.localhost\...` 双向映射）及安全运行时组件。 | 封装在适配层与存储层内部，避免平台特定代码散落到业务层。 |
-
----
-
-## 4. 关键交互链路与跨环境设计
-
-### 4.1 Windows 桌面端与 WSL2 内 Codex 通信架构
-
-在当前典型开发环境（Windows 宿主机运行桌面 GUI，WSL2 Ubuntu 内运行 Codex 及开发工具链）下，推荐采用**“WSL2 内置本地服务 + Windows 桌面端跨边界连接”**模式：
-
-1. `apps/local-service` 直接运行在 WSL2 Ubuntu 环境内（与 Codex 处于同一 Linux 命名空间与文件系统），确保对 Codex App Server、Linux 进程状态及 `~/.codex` 会话目录拥有原生、低延迟、无文件锁兼容性问题的访问能力。
-2. Windows 宿主机的 `apps/desktop`（Tauri 桌面端）通过 WSL2 本地回路映射（`127.0.0.1` 受控端口 + 本地鉴权 Token）或通过 `wsl.exe` 标准输入输出通道（Stdio JSON-RPC）与 WSL2 内的 `apps/local-service` 通信。
-3. 这种边界划分彻底避免了从 Windows 侧通过 9P 文件系统（`\\wsl.localhost\`）高频读写 Linux 下 SQLite 数据库或 Session 文件带来的性能衰减与文件损坏风险。
-
-### 4.2 个人版向企业版演进的预留边界
-
-为避免过度设计，V0.1 不实现任何企业版代码，仅在架构上保持以下三处干净边界：
-
-1. **策略提供者边界（Policy Provider）**：`packages/security` 从本地配置加载规则，未来可扩展只读合并远端企业基线策略。
-2. **审计接收器边界（Audit Sink）**：审计事件在 V0.1 仅写入本地 SQLite，未来可旁路挂载企业审计上报通道。
-3. **身份与审批通道边界**：审批请求在 V0.1 仅推送本地桌面端弹窗，未来可扩展企业 IM / 审批流回调。
-
----
-
-## 5. 技术栈选型评估与建议
-
-结合工程现有环境（已安装 Node.js `v18.19.1`、pnpm `10.11.0`、Python `3.12.3` + `uv`，暂未安装 Rust 工具链）及 M1 历史成果，技术栈评估如下：
-
-| 架构层次 | 推荐技术选型 | 选型理由 | 潜在风险与应对措施 |
+| 模块路径 | 核心职责 | 允许依赖 | 严禁直接依赖 |
 | :--- | :--- | :--- | :--- |
-| **桌面端 (`apps/desktop`)** | **Tauri 2.x + React + TypeScript** | 相比 Electron 内存占用极低、安装包小；Tauri 外壳仅负责窗口管理、系统托盘与原生通知，前端使用成熟的 React + TS 生态快速构建中文管理界面。 | **风险**：当前 WSL2 环境尚未安装 Rust（`rustc`/`cargo`），且在 WSL2 中直接编译运行 Windows 原生 GUI 较繁琐。<br>**应对**：开发初期前端 UI 可通过 Vite 在浏览器快速联调；待进入桌面打包阶段再按需安装 Rust 工具链，不阻塞早期核心服务研发。 |
-| **本地服务 (`apps/local-service`) & Session/备份 (`packages/session`, `packages/backup`)** | **Python 3.12 (FastAPI / Asyncio)** 或 **TypeScript (Node.js)**<br>*（优先推荐 Python 3.12 承接本地服务与 M1 成果）* | 1. 当前环境已具备完整的 Python 3.12.3 与高速包管理器 `uv`；<br>2. 可最大化平滑复用既有 M1 阶段的 Codex Session 管理成果；<br>3. 参考项目 HOL Guard 主体同样采用 Python + Rust 混合架构，Python 便于快速实现本地 API、SQLite 操作与文件处理。 | **风险**：Python 单文件分发体积较大。<br>**应对**：通过 `uv` 管理独立虚拟环境；WSL2 环境下原生自带 Python 3.12，无需打包重型解释器即可运行本地服务。 |
-| **安全核心 (`packages/security`)** | **分阶段演进：V0.1 先用 Python/TS 实现规则引擎原型，关键高性能/隔离组件按需引入 Rust** | 1. 遵循“不因为选择 Tauri 就强制所有后端使用 Rust”的原则；<br>2. V0.1 核心在于跑通拦截闭环、策略模型与审批状态机，使用与 `local-service` 相同的语言（Python）可消除跨语言调用开销；<br>3. 待集成类似 `nono` / `Pipelock` 的底层沙箱或高频扫描能力时，再以独立 CLI 或 PyO3/N-API 扩展形式引入 Rust。 | **风险**：纯应用层拦截若缺乏 OS 级沙箱配合，可能被复杂脚本绕过。<br>**应对**：V0.1 明确聚焦 Codex 官方 Hook / App Server 协议层拦截与静态规则分析，并在后续版本集成 OS 级隔离机制。 |
-| **数据存储 (`packages/storage`)** | **SQLite (开启 WAL 模式) + 本地受控文件目录** | 零配置、单文件事务安全、天然支持 FTS5 全文检索（极适合 Session 内容搜索），Python 标准库原生内置 `sqlite3`。 | **风险**：跨 Windows/WSL2 的 9P 文件系统操作 SQLite 易锁死。<br>**应对**：强制将 SQLite 数据库文件存放在 WSL2 原生 Linux 文件系统内，由 `local-service` 独占访问。 |
-| **Agent 接入 (`packages/agent-adapters`)** | **Codex App Server 协议集成 + 本地 Session 目录只读解析** | 官方标准接口结合本地文件只读扫描，既能实时感知与控制运行态动作，又能在 Codex 离线时浏览管理历史会话。 | **风险**：Codex 版本迭代可能导致内部 Session 格式或 App Server 字段微调。<br>**应对**：将所有 Codex 特定字段解析严格收敛在 `packages/agent-adapters` 与解析器适配层中，并建立多版本样本回归测试。 |
+| `apps/desktop` | 提供全中文桌面 UI（6 大核心页面）、配置变更 Diff 二次确认、断连状态感知与通过 `wsl.exe --exec` 调用 WSL2 CLI。 | 明确版本化的 CLI JSON DTO | WSL2 内部 SQLite 文件、`~/.codex` 原始文件、任意拼接的 `bash -lc` 命令 |
+| `apps/local-service` | 编译产出 `ai-guard` 二进制：提供 `hook` 热路径入口、`doctor`/`status`/`self-test` 诊断、`install`/`uninstall` 事务、`run` 受管启动、`rule`/`events`/`session` 子命令。 | `agent-adapters`, `security`, `backup`, `storage`, `session` | 桌面端前端 UI 组件 |
+| `packages/agent-adapters` | 封装具体 Agent（首期 `codex-cli 0.160.1+`）的协议解析、工具名归一化（`Bash`/`unified_exec`/`write_stdin`/`apply_patch`/MCP）、能力探测与响应编码。 | 内部领域事件模型（`ActionEvent`, `Decision`） | 具体安全规则实现、SQLite 驱动、Tauri UI |
+| `packages/security` | 纯确定性安全策略引擎：TOML 规则编译校验、高危 Shell/敏感路径/危险 Git 匹配、Deny 优先裁决、命中规则解释生成。 | 纯领域类型、受控正则/词法分析器 | Codex 原始 Hook JSON、数据库 I/O、网络请求 |
+| `packages/backup` | 通用快照备份与恢复引擎：生成带 SHA-256 的 `manifest.json`、校验文件完整性、利用同目录临时文件 + `fsync` + `rename` 实现原子替换与回滚。 | 本地受控文件系统、SHA-256 哈希库 | 具体 Agent 协议细节 |
+| `packages/storage` | 管理本地 SQLite（WAL 模式）、Schema 迁移、敏感信息脱敏器（Redactor）以及 15ms 超时无锁 `events-fallback.jsonl` 降级队列。 | `rusqlite`、脱敏规则、领域审计模型 | Agent Hook 协议输出逻辑 |
+| `packages/session` | 承接 M1 成果：只读读取与索引本地 Codex 会话（`session_index.jsonl`、`thread_history_1.sqlite`），联动 `packages/backup` 提供会话安全备份。 | `storage`、`backup`、只读文件/SQLite 访问 | 修改活跃 Session 原始文件 |
+
+---
+
+## 4. 关键技术设计机制（已纳入优化点）
+
+### 4.1 适配 `codex-cli 0.160.1+` 真实运行机制
+1. **多工具名与四大 Hook 事件建模**：
+   - 适配层在架构上建模 `PreToolUse`、`PermissionRequest`、`UserPromptSubmit`、`PostToolUse` 四类事件，V0.1 首期强制激活 `PreToolUse`。
+   - 针对 `codex-cli 0.160.1` 默认启用 `unified_exec` 与 `hooks` 的特性，将 Shell 执行相关的工具名（如 `Bash`、`unified_exec`、`write_stdin` 等，以 Phase 0 实测清单为准）统一归一化为 `ActionKind::Shell` 进行安全检查。
+2. **后台 `app-server-daemon` 感知**：
+   - `ai-guard doctor` 与 `ai-guard install` 检测 `~/.codex/app-server-daemon` 运行状态，确保 Hook 配置变更后通过隔离自检验证最新 Hook 已被当前 Codex 实例加载，防止因旧 Daemon 缓存配置导致的假生效。
+
+### 4.2 Hook 低延迟裁决与 SQLite 无锁降级（防超时 Fail-Open）
+Codex Hook 一旦执行超时，宿主可能按 Fail-Open 继续执行工具。为确保 `ai-guard hook codex pre-tool-use` 端到端 P95 延迟远低于超时阈值：
+1. **同步极速路径**：Hook 进程不初始化复杂异步运行时，直接从内存/本地可信策略文件评估规则。
+2. **15ms 写库熔断与无锁 Fallback**：
+   - `events.db` 开启 `PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;`，并设置 `busy_timeout = 15ms`。
+   - 若 15ms 内无法获取 SQLite 写锁或发生磁盘错误，**绝不阻塞或改变已得出的 `Deny/Allow` 裁决**，立即向 `stdout` 输出协议 JSON，并将脱敏事件追加写入 `~/.local/state/ai-guard/events-fallback.jsonl`，后续由 `ai-guard status / events list` 自动补偿入库。
+
+### 4.3 Windows 桌面端与 WSL2 受限通信架构
+1. Windows 宿主机的 `apps/desktop` 通过 Tauri Rust Command 执行：
+   `wsl.exe --distribution <distro> --exec <absolute-ai-guard-path> <approved-subcommand> --json`
+2. 所有参数通过独立 `argv` 数组传递，严禁经过 `bash -c` 或 `cmd /c` 解释，从根源杜绝命令注入。
+3. 当 WSL2 未启动、命令超时或返回非预期结构时，桌面端立即呈现 `unknown`（状态未知），绝不展示缓存的虚假“已验证保护”绿灯。
+
+---
+
+## 5. 定型技术栈清单（对应 ADR-0001 ～ ADR-0003）
+
+| 架构层次 | 定型技术选型 | 核心用途与设计约束 |
+| :--- | :--- | :--- |
+| **核心语言与构建** | **Rust Stable (`rust-toolchain.toml` 锁定)** | 统一构建 `apps/local-service` 与 `packages/*`；禁用 `unsafe`（`#![forbid(unsafe_code)]`）；编译零外部运行时依赖的 Linux 原生二进制。 |
+| **序列化与配置** | **`serde` / `serde_json` / `toml` / `toml_edit`** | 解析 Codex Hook JSON、编译 `policy.toml`、无损合并修改用户 `~/.codex/config.toml`（保留原有注释与第三方配置）。 |
+| **本地数据库** | **`rusqlite` (SQLite 3, WAL 模式)** | 存储脱敏安全事件（`security_events`）、策略版本、安装状态与自检记录；存放在 WSL2 原生 Linux 文件系统内（`~/.local/share/ai-guard/events.db`）。 |
+| **校验与加密摘要** | **`sha2` (SHA-256)** | 用于 `packages/backup` 备份清单完整性校验、策略版本摘要与安装配置防篡改比对。 |
+| **桌面应用端** | **Tauri 2.x + React + TypeScript + Vite** | 构建轻量级全中文 Windows 桌面管理端；仅通过白名单 Tauri Command 调用 WSL2 CLI JSON 接口。 |
+| **未来企业版控制平面（V1.0 规划）** | **Rust Axum + PostgreSQL + Ed25519 + OIDC/mTLS** | 独立私有仓库开发，提供设备注册、签名策略下发与集中脱敏审计，不在个人版 V0.1 中提前引入。 |

@@ -17,10 +17,11 @@
 
 本文件是开发“做什么、为什么这样设计、如何验收”的技术基线。`docs/IMPLEMENTATION_BACKLOG_V1.0.md` 是阶段任务与交付门禁；`docs/AGENT_DEVELOPMENT_PROTOCOL.md` 规定 Codex/AGY 自动编码的工作流程。任何实现与本文件不一致，先写 ADR 并记录差异，不应静默更改核心安全边界。
 
-- **已知已完成**：用户已建立 AI卫士独立工程，完成目录初始化、Git 初始化和首次提交；后端方向选定 Rust。旧工程的 M1 Session 代码在其他工程中，不能假定已经迁入。
-- **尚未确认**：当前工程的实际 Cargo workspace、Codex 版本、Hook 测试证据、Windows Tauri 客户端、策略/审计模块、安全强制隔离能力。
-- **来源与协议**：Codex 官方 Hooks 文档（见文末 R1）、Codex 官方仓库 Hooks Schema（R2）、HOL Guard（R3）、nono（R4）、Tauri 2（R5）。实现前以本机 Codex 版本和可复现协议测试为准。
+- **已知已完成**：用户已建立 AI卫士独立工程，完成目录初始化、Git 初始化、首次提交及 Apache-2.0 许可证确认；后端方向选定 Rust；本机 WSL2 已确认安装 `codex-cli 0.160.1`（`hooks`、`daemon_auto_start`、`unified_exec` 均为 `stable=true`）。旧工程的 M1 Session 代码将在安全主线跑通后的 Phase 4B（M5 扩展）只读汇入。
+- **尚未确认**：当前工程的实际 Cargo workspace（待 M0 安装 Rust stable 工具链后建立）、Codex `0.160.1` 隔离环境 Hook 实测证据、Windows Tauri 客户端、策略/审计模块、安全强制隔离能力。
+- **来源与协议**：Codex 官方 Hooks 文档（见文末 R1）、Codex 官方仓库 Hooks Schema（R2）、HOL Guard（R3）、nono（R4）、Tauri 2（R5）。实现前以本机 `codex-cli 0.160.1` 版本和可复现协议测试为准。
 - **名词**：观察（Observe）= 能看到/记录；拦截（Hook Deny）= Codex 支持的工具调用执行前明确拒绝；隔离（Sandbox Enforcement）= 操作系统内核或可靠执行环境实际限制。这三项不可混用。
+- **与 `docs/PRD_V0.1.md` 的协同关系**：本文件已与根目录 `docs/PRD_V0.1.md`（分阶段开发 PRD 优化定稿版）对齐，纳入了针对 `codex-cli 0.160.1` `app-server-daemon` 感知、多工具名归一化（`Bash`/`unified_exec`/`write_stdin`/`apply_patch`/MCP）、`packages/backup` 前置事务备份、SQLite WAL + 15ms 超时无锁 `events-fallback.jsonl` 降级队列以及 Phase 4B M1 Session 只读保护等 6 项优化。
 
 ## 1. 产品目标、边界与里程碑
 
@@ -206,13 +207,14 @@ ai-guard/
 
 | 操作类别 | 首版接入方式 | 理论覆盖 | 要求验证的边界 |
 |---|---|---|---|
-| Shell / Unified Exec | `PreToolUse` `Bash` | 执行前拒绝已支持 | 复杂多命令、重定向、后台进程、write_stdin |
+| Shell / Unified Exec | `PreToolUse` (`Bash` / `unified_exec` / `write_stdin`) | 执行前拒绝已支持 | 复杂多命令、重定向、后台进程、write_stdin 及 `codex-cli 0.160.1` 工具名实测映射 |
 | `apply_patch` / 文件编辑 | `PreToolUse` `apply_patch` | 执行前拒绝已支持 | 参数结构、路径定位、路径竞态 |
 | MCP 工具调用 | `PreToolUse` 按 MCP 工具名 | 支持的本地工具调用 | MCP server 多版本、外部/托管 MCP 例外 |
 | 其他本地函数工具 | 依据 Hook 覆盖检测 | 部分支持 | 特殊工具可绕开默认路径 |
 | Hosted Tools / 云端搜索 | 无通用本地 PreToolUse | 不覆盖 | 不得标“已保护” |
 | Codex 原生请求审批 | `PermissionRequest` | 只在 Codex 原本需要审批时执行 | **不能**用来替代任意操作的自建人工审批 |
-| 未托管 Codex/未受信 Hook | `doctor`/`run` 检测 | 可能没有保护 | 必须展示未保护/未知 |
+| 提示词提交与输出后处理 | `UserPromptSubmit` / `PostToolUse` | 架构预留扩展点 | V0.1 首期聚焦 `PreToolUse`，预留枚举与透传能力 |
+| 未托管 Codex/未受信 Hook / 旧 Daemon 缓存 | `doctor`/`run` 检测（含 `app-server-daemon` 状态） | 可能没有保护 | 必须展示未保护/未知，并验证 Daemon 是否已加载新 Hook |
 
 来源：R1 Codex Hooks Tool Coverage、PreToolUse、PermissionRequest。
 
@@ -517,7 +519,7 @@ CREATE TABLE IF NOT EXISTS self_test_runs (
 );
 ```
 
-Migration 必须是明确版本并可回退或备份恢复；SQLite WAL 视独立运行与多进程并发测试决定；写入繁忙应有限重试；审计写入故障不得改变已得出的拒绝决策。默认可配置保留 30 天 / 100MB（建议目标，需按试点反馈调整），支持本地导出脱敏 JSON/CSV 并明确提示用途。
+Migration 必须是明确版本并可回退或备份恢复；SQLite 强制开启 `PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;` 并将 Hook 进程的 `busy_timeout` 限制在 **15ms** 以内；当遇到多进程并发锁竞争或 I/O 异常时，**优先向 `stdout` 输出已得出的 `Deny/Allow` 协议 JSON**，并将未写入 SQLite 的脱敏事件追加至本地无锁 `~/.local/state/ai-guard/events-fallback.jsonl`（后续由 CLI/UI 查询时自动归并入库），确保审计写入故障绝不改变已得出的拒绝决策，也绝不因写库阻塞触发 Hook 超时放行（Fail-Open）。默认可配置保留 30 天 / 100MB（建议目标，需按试点反馈调整），支持本地导出脱敏 JSON/CSV 并明确提示用途。
 
 ## 9. CLI、IPC 与桌面交互设计
 
