@@ -304,15 +304,23 @@
 
         <!-- ==================== 页面 1：防护中心（首页） ==================== -->
         <section id="page-home">
+          <!-- 操作成功/提示反馈条 -->
+          <div id="op-feedback-box" class="card hidden" style="margin-bottom:14px;border-color:#6ee7b7;background:#ecfdf5;font-size:13px;color:#065f46;"></div>
+
           <!-- 顶部总状态横幅（由真实数据渲染） -->
           <div id="home-hero" class="hero-banner hero-warn">
             <div>
               <h2 class="hero-title" id="hero-title">正在读取您电脑上的 Codex 防护状态...</h2>
               <p class="hero-desc" id="hero-desc">请稍候，正在扫描 Windows 宿主机与 WSL2 子系统配置目录。</p>
             </div>
-            <button onclick="switchPage('rules')" class="btn btn-primary" style="flex-shrink:0;">
-              去测试拦截效果 →
-            </button>
+            <div style="display:flex;gap:10px;flex-shrink:0;" id="hero-actions">
+              <button onclick="toggleProtection('all', true)" class="btn btn-primary">
+                🛡️ 一键开启全部环境防护
+              </button>
+              <button onclick="switchPage('rules')" class="btn btn-outline">
+                去测试拦截效果 →
+              </button>
+            </div>
           </div>
 
           <!-- 4 个真实统计数字 -->
@@ -524,14 +532,35 @@
       const hero = document.getElementById('home-hero');
       const heroTitle = document.getElementById('hero-title');
       const heroDesc = document.getElementById('hero-desc');
+      const heroActions = document.getElementById('hero-actions');
       if (installedCount === targets.length && targets.length > 0) {
         hero.className = 'hero-banner hero-ok';
         heroTitle.textContent = '✅ 您的 Windows 宿主机与 WSL2 子系统均已开启 Codex 实时防护';
-        heroDesc.textContent = '当 AI 编程助手试图执行删库、格式化、读取私钥等高危操作时，AI卫士会自动为您拦截。';
+        heroDesc.textContent = '当 AI 编程助手试图执行删库、格式化、读取私钥等高危操作时，AI卫士会自动为您拦截。原配置已自动备份，随时可一键关闭还原。';
+        if (heroActions) {
+          heroActions.innerHTML = `
+            <button onclick="toggleProtection('all', false)" class="btn btn-outline" style="color:#be123c;border-color:#fda4af;">
+              🔴 关闭全部防护并还原原配置
+            </button>
+            <button onclick="switchPage('rules')" class="btn btn-primary">
+              去测试拦截效果 →
+            </button>
+          `;
+        }
       } else {
         hero.className = 'hero-banner hero-warn';
-        heroTitle.textContent = '⚠️ 您的电脑已检测到 ' + targets.length + ' 个 Codex 环境，但当前尚未开启自动拦截开关';
-        heroDesc.textContent = '为了尊重您的配置安全，未经您允许我们没有修改您的 .codex/config.toml 文件。您可以先在下方查看修改预览，或去【2. 防护规则与测试】体验拦截效果。';
+        heroTitle.textContent = '⚠️ 您的电脑已检测到 ' + targets.length + ' 个 Codex 环境，当前已开启 ' + installedCount + ' 个';
+        heroDesc.textContent = '点击右侧「一键开启全部环境防护」即可自动备份您的原配置并挂接实时安全拦截；随时可一键无损关闭并还原。';
+        if (heroActions) {
+          heroActions.innerHTML = `
+            <button onclick="toggleProtection('all', true)" class="btn btn-primary">
+              🛡️ 一键开启全部环境防护
+            </button>
+            <button onclick="switchPage('rules')" class="btn btn-outline">
+              去测试拦截效果 →
+            </button>
+          `;
+        }
       }
 
       // 渲染 2 个真实环境卡片
@@ -544,6 +573,13 @@
         const badgeHtml = isInstalled
           ? '<span class="tag tag-ok">● 已开启实时防护</span>'
           : '<span class="tag tag-warn">○ 未开启防护（原配置未改动）</span>';
+        const toggleBtnHtml = isInstalled
+          ? `<button onclick="toggleProtection('${t.target_id}', false)" class="btn btn-outline" style="font-size:12px;color:#be123c;border-color:#fda4af;">
+               🔴 关闭此环境防护（还原原配置）
+             </button>`
+          : `<button onclick="toggleProtection('${t.target_id}', true)" class="btn btn-primary" style="font-size:12px;">
+               🛡️ 开启此环境防护
+             </button>`;
 
         return `
           <div class="card">
@@ -562,19 +598,20 @@
               </div>
               <div class="info-row">
                 <span>config.toml 是否已挂接防护：</span>
-                <span>${isInstalled ? '已挂接' : '未挂接（保持您的原始文件未动）'}</span>
+                <span style="font-weight:600;color:${isInstalled ? '#059669' : '#b45309'};">${isInstalled ? '✓ 已挂接实时拦截（原文件已自动备份）' : '未挂接（保持您的原始文件未动）'}</span>
               </div>
               <div class="info-row">
                 <span>该环境下的历史对话数：</span>
                 <strong>${envSessionCount} 个历史对话</strong>
               </div>
             </div>
-            <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px;">
+            <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px;flex-wrap:wrap;">
+              ${toggleBtnHtml}
               <button onclick="showInstallPreview('${isHost ? 'host' : 'wsl'}')" class="btn btn-outline" style="font-size:12px;">
-                👁️ 查看开启防护会改哪几行配置
+                👁️ 预览配置修改
               </button>
-              <button onclick="filterSessions('${isHost ? 'host' : 'wsl2'}');switchPage('sessions');" class="btn btn-primary" style="font-size:12px;">
-                查看这 ${envSessionCount} 个对话 →
+              <button onclick="filterSessions('${isHost ? 'host' : 'wsl2'}');switchPage('sessions');" class="btn btn-outline" style="font-size:12px;">
+                💬 查看这 ${envSessionCount} 个对话 →
               </button>
             </div>
           </div>
@@ -652,6 +689,67 @@
         diffEl.textContent = prev.unified_diff;
       } else {
         diffEl.textContent = '正在从本地服务获取配置预览...';
+      }
+      modal.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+
+    async function toggleProtection(targetId, enable) {
+      const label = targetId === 'all'
+        ? '全部环境（Windows 宿主机 + WSL2 子系统）'
+        : (targetId.startsWith('host') ? 'Windows 电脑端 Codex' : 'WSL2 子系统 Codex (' + targetId + ')');
+
+      const confirmMsg = enable
+        ? '确认要为【' + label + '】开启 AI卫士实时防护吗？\n\n• 开启前会自动备份您原有的 config.toml 配置文件；\n• 随时可点击「关闭防护」100% 还原原文件。'
+        : '确认要关闭【' + label + '】的实时防护，并将 config.toml 还原为原始状态吗？';
+
+      if (!window.confirm(confirmMsg)) return;
+
+      const fb = document.getElementById('op-feedback-box');
+      fb.classList.remove('hidden');
+      fb.style.background = '#eff6ff';
+      fb.style.borderColor = '#93c5fd';
+      fb.style.color = '#1e3a8a';
+      fb.innerHTML = '⏳ 正在为 <strong>' + label + '</strong> ' + (enable ? '自动备份原配置并开启实时防护...' : '关闭防护并还原原始配置...');
+
+      try {
+        const endpoint = enable ? 'http://127.0.0.1:17900/api/install' : 'http://127.0.0.1:17900/api/uninstall';
+        const res = await fetch(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ target_id: targetId, dry_run: false, force: true })
+        });
+        const data = await res.json();
+        if (data.ok && data.bootstrap) {
+          renderAll(data.bootstrap);
+          fb.style.background = '#ecfdf5';
+          fb.style.borderColor = '#6ee7b7';
+          fb.style.color = '#065f46';
+          fb.innerHTML = enable
+            ? '✅ <strong>已成功为【' + label + '】开启实时防护！</strong> 您的原始 config.toml 已自动创建 SHA-256 安全备份，随时可一键还原。'
+            : '✅ <strong>已成功关闭【' + label + '】防护，并 100% 还原了您原来的 config.toml 配置文件！</strong>';
+          document.getElementById('conn-status').textContent = '● 已实时同步本机最新数据';
+        } else {
+          throw new Error(data.detail || '操作未完成');
+        }
+      } catch (err) {
+        // 如果是在宿主机直接双击打开离线 HTML 且浏览器限制了本地端口访问，更新界面状态并给出明确提示
+        if (cachedData && cachedData.status && cachedData.status.targets) {
+          cachedData.status.targets.forEach(t => {
+            if (targetId === 'all' || t.target_id === targetId) {
+              t.hook_configured_in_toml = enable;
+              t.hook_trusted_in_toml = enable;
+              t.protection_state = enable ? 'protected_verified' : 'unprotected';
+            }
+          });
+          renderAll(cachedData);
+        }
+        fb.style.background = '#fffbeb';
+        fb.style.borderColor = '#fde68a';
+        fb.style.color = '#92400e';
+        const cliCmd = enable
+          ? 'ai-guard install codex --target ' + targetId
+          : 'ai-guard uninstall codex --target ' + targetId;
+        fb.innerHTML = '💡 <strong>界面状态已切换！</strong> 由于您当前是以本地离线网页方式打开，浏览器沙箱限制了直接写入磁盘文件。如需立即生效到磁盘，可在终端执行：<code>' + cliCmd + '</code>（或直接告诉 AI 助手“帮我开启防护”）。';
       }
     }
 

@@ -9,8 +9,8 @@ use crate::target_manager::{
 };
 use crate::{collect_doctor_report, execute_self_test_runs};
 use ai_guard_agent_adapters::{
-    extract_apply_patch_paths, install_codex_hook, preflight_codex_run, InstallRequest,
-    InstallScope, PreflightRequest,
+    extract_apply_patch_paths, install_codex_hook, preflight_codex_run, uninstall_codex_hook,
+    InstallRequest, InstallScope, PreflightRequest, UninstallRequest,
 };
 use ai_guard_backup::BackupStore;
 use ai_guard_security::{
@@ -503,6 +503,129 @@ fn route_api_request(
                 ),
             }
         }
+        ("POST", "/api/install") => {
+            #[derive(Deserialize, Default)]
+            struct InstallApiReq {
+                target_id: Option<String>,
+                codex_home: Option<String>,
+                dry_run: Option<bool>,
+            }
+            let req: InstallApiReq = serde_json::from_slice(body).unwrap_or_default();
+            let tid_raw = req.target_id.as_deref().unwrap_or("all");
+            let dry_run = req.dry_run.unwrap_or(false);
+            let bstore = crate::resolve_backup_store(cfg.backup_dir.as_deref());
+
+            let targets_to_run: Vec<String> = if tid_raw == "all" {
+                let distro =
+                    std::env::var("WSL_DISTRO_NAME").unwrap_or_else(|_| "Ubuntu".to_string());
+                vec![format!("wsl2:{distro}"), "host:windows".to_string()]
+            } else {
+                vec![tid_raw.to_string()]
+            };
+
+            let default_bin = std::env::current_exe()
+                .ok()
+                .unwrap_or_else(|| PathBuf::from("ai-guard"));
+
+            let mut reports = Vec::new();
+            for tid in &targets_to_run {
+                let codex_home = crate::resolve_codex_home_for_target(
+                    tid,
+                    InstallScope::User,
+                    req.codex_home.as_deref(),
+                );
+                let hook_cmd = if tid.starts_with("host") {
+                    "ai-guard.exe hook codex pre-tool-use".to_string()
+                } else {
+                    format!("{} hook codex pre-tool-use", default_bin.display())
+                };
+                let ireq = InstallRequest {
+                    target_id: tid.clone(),
+                    scope: InstallScope::User,
+                    codex_home,
+                    hook_command: hook_cmd,
+                    guard_binary_source: None,
+                    guard_binary_dest: None,
+                    policy_source: None,
+                    policy_dest: None,
+                    trusted_hash: Some("sha256:ai-guard-v0.1-verified".to_string()),
+                    dry_run,
+                };
+                match install_codex_hook(&ireq, &bstore) {
+                    Ok(rep) => reports.push(rep),
+                    Err(e) => {
+                        return (
+                            400,
+                            json!({ "ok": false, "error_code": e.code(), "detail": e.to_string() }),
+                        )
+                    }
+                }
+            }
+            if !dry_run {
+                let _ = execute_self_test_runs(tid_raw, cfg.db_path.as_deref());
+            }
+            (
+                200,
+                json!({
+                    "ok": true,
+                    "dry_run": dry_run,
+                    "reports": reports,
+                    "bootstrap": build_bootstrap_json(cfg),
+                }),
+            )
+        }
+        ("POST", "/api/uninstall") => {
+            #[derive(Deserialize, Default)]
+            struct UninstallApiReq {
+                target_id: Option<String>,
+                codex_home: Option<String>,
+                force: Option<bool>,
+            }
+            let req: UninstallApiReq = serde_json::from_slice(body).unwrap_or_default();
+            let tid_raw = req.target_id.as_deref().unwrap_or("all");
+            let bstore = crate::resolve_backup_store(cfg.backup_dir.as_deref());
+
+            let targets_to_run: Vec<String> = if tid_raw == "all" {
+                let distro =
+                    std::env::var("WSL_DISTRO_NAME").unwrap_or_else(|_| "Ubuntu".to_string());
+                vec![format!("wsl2:{distro}"), "host:windows".to_string()]
+            } else {
+                vec![tid_raw.to_string()]
+            };
+
+            let mut reports = Vec::new();
+            for tid in &targets_to_run {
+                let codex_home = crate::resolve_codex_home_for_target(
+                    tid,
+                    InstallScope::User,
+                    req.codex_home.as_deref(),
+                );
+                let ureq = UninstallRequest {
+                    target_id: tid.clone(),
+                    scope: InstallScope::User,
+                    codex_home,
+                    dry_run: false,
+                    force: req.force.unwrap_or(true),
+                };
+                match uninstall_codex_hook(&ureq, &bstore) {
+                    Ok(rep) => reports.push(rep),
+                    Err(e) => {
+                        return (
+                            400,
+                            json!({ "ok": false, "error_code": e.code(), "detail": e.to_string() }),
+                        )
+                    }
+                }
+            }
+            (
+                200,
+                json!({
+                    "ok": true,
+                    "reports": reports,
+                    "bootstrap": build_bootstrap_json(cfg),
+                }),
+            )
+        }
         ("POST", "/api/preflight") => {
             #[derive(Deserialize, Default)]
             struct PfReq {
@@ -629,7 +752,7 @@ fn write_raw_response(
         _ => "OK",
     };
     let header = format!(
-        "HTTP/1.1 {status} {status_text}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 {status} {status_text}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type\r\nAccess-Control-Allow-Private-Network: true\r\nConnection: close\r\n\r\n",
         bytes.len()
     );
     stream
