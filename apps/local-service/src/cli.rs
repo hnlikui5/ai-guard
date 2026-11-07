@@ -96,6 +96,33 @@ pub enum Commands {
         #[command(subcommand)]
         agent: HookAgents,
     },
+
+    /// 启动仅监听本地回路（127.0.0.1）的桌面控制平面服务（供 apps/desktop 调用）
+    Serve {
+        /// 本地回路监听地址（严禁指定 0.0.0.0 或外部网卡地址）
+        #[arg(long, default_value = "127.0.0.1:17900")]
+        bind: String,
+
+        /// 静态前端资源目录（可选，如 apps/desktop/dist）
+        #[arg(long)]
+        static_dir: Option<String>,
+
+        /// 显式指定审计数据库路径
+        #[arg(long)]
+        db_path: Option<String>,
+
+        /// 显式指定备份仓库根目录
+        #[arg(long)]
+        backup_dir: Option<String>,
+
+        /// 显式指定策略文件路径
+        #[arg(long)]
+        policy_path: Option<String>,
+
+        /// 测试模式：处理指定数量的请求后自动退出
+        #[arg(long)]
+        max_requests: Option<usize>,
+    },
 }
 
 #[derive(Debug, Subcommand)]

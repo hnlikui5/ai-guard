@@ -1,4 +1,6 @@
 mod cli;
+mod http_server;
+mod target_manager;
 
 use ai_guard_agent_adapters::{
     extract_apply_patch_paths, handle_codex_pre_tool_use_bytes_with_engine, install_codex_hook,
@@ -228,38 +230,57 @@ fn main() {
                 }
             },
         },
+        Commands::Serve {
+            bind,
+            static_dir,
+            db_path,
+            backup_dir,
+            policy_path,
+            max_requests,
+        } => {
+            let cfg = http_server::ServeConfig {
+                bind_addr: bind,
+                static_dir: static_dir.map(PathBuf::from),
+                db_path,
+                backup_dir,
+                policy_path,
+            };
+            if let Err(e) = http_server::run_http_server(&cfg, max_requests) {
+                eprintln!("ERROR: {e}");
+                std::process::exit(1);
+            }
+        }
     }
 }
 
 #[derive(Debug, Serialize)]
-struct DoctorTargetReport {
-    target_id: String,
-    environment_kind: EnvironmentKind,
-    codex_home: String,
-    codex_home_exists: bool,
-    config_toml_exists: bool,
-    hook_configured_in_toml: bool,
-    hook_trusted_in_toml: bool,
-    protection_state: String,
-    real_interception_verified: bool,
-    last_self_test: Option<SelfTestRunRecord>,
-    limitations: Vec<String>,
+pub struct DoctorTargetReport {
+    pub target_id: String,
+    pub environment_kind: EnvironmentKind,
+    pub codex_home: String,
+    pub codex_home_exists: bool,
+    pub config_toml_exists: bool,
+    pub hook_configured_in_toml: bool,
+    pub hook_trusted_in_toml: bool,
+    pub protection_state: String,
+    pub real_interception_verified: bool,
+    pub last_self_test: Option<SelfTestRunRecord>,
+    pub limitations: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
-struct DoctorReport {
-    schema_version: u32,
-    ai_guard_version: &'static str,
-    overall_status: String,
-    targets: Vec<DoctorTargetReport>,
+pub struct DoctorReport {
+    pub schema_version: u32,
+    pub ai_guard_version: &'static str,
+    pub overall_status: String,
+    pub targets: Vec<DoctorTargetReport>,
 }
 
-fn run_doctor(
+pub fn collect_doctor_report(
     target_filter: &str,
     explicit_codex_home: Option<&str>,
     explicit_db_path: Option<&str>,
-    as_json: bool,
-) {
+) -> DoctorReport {
     let store = AuditStore::resolve_default(explicit_db_path);
     let mut targets = Vec::new();
     let filter = target_filter.trim().to_ascii_lowercase();
@@ -332,12 +353,21 @@ fn run_doctor(
         "ok".to_string()
     };
 
-    let report = DoctorReport {
+    DoctorReport {
         schema_version: 1,
         ai_guard_version: env!("CARGO_PKG_VERSION"),
         overall_status,
         targets,
-    };
+    }
+}
+
+fn run_doctor(
+    target_filter: &str,
+    explicit_codex_home: Option<&str>,
+    explicit_db_path: Option<&str>,
+    as_json: bool,
+) {
+    let report = collect_doctor_report(target_filter, explicit_codex_home, explicit_db_path);
 
     if as_json {
         println!(
@@ -425,12 +455,10 @@ fn inspect_codex_target(
     }
 }
 
-fn run_self_test_codex(
+pub fn execute_self_test_runs(
     target_filter: &str,
-    _isolated: bool,
     explicit_db_path: Option<&str>,
-    as_json: bool,
-) {
+) -> Vec<SelfTestRunRecord> {
     let store = AuditStore::resolve_default(explicit_db_path);
     let _ = store.init_schema();
 
@@ -522,6 +550,16 @@ fn run_self_test_codex(
         let _ = store.record_self_test(&rec);
         records.push(rec);
     }
+    records
+}
+
+fn run_self_test_codex(
+    target_filter: &str,
+    _isolated: bool,
+    explicit_db_path: Option<&str>,
+    as_json: bool,
+) {
+    let records = execute_self_test_runs(target_filter, explicit_db_path);
 
     let all_passed = !records.is_empty() && records.iter().all(|r| r.passed);
     if as_json {
@@ -729,12 +767,11 @@ fn run_events_export(
     }
 }
 
-fn run_session_list(
+pub fn collect_sessions_readonly(
     target_filter: &str,
     explicit_codex_home: Option<&str>,
     limit: usize,
-    as_json: bool,
-) {
+) -> Vec<SessionSummary> {
     let filter = target_filter.trim().to_ascii_lowercase();
     let mut all_sessions: Vec<SessionSummary> = Vec::new();
 
@@ -764,6 +801,16 @@ fn run_session_list(
             }
         }
     }
+    all_sessions
+}
+
+fn run_session_list(
+    target_filter: &str,
+    explicit_codex_home: Option<&str>,
+    limit: usize,
+    as_json: bool,
+) {
+    let all_sessions = collect_sessions_readonly(target_filter, explicit_codex_home, limit);
 
     if as_json {
         println!(
@@ -896,7 +943,7 @@ fn discover_windows_host_codex_home() -> Option<PathBuf> {
     fallback
 }
 
-fn resolve_codex_home_for_target(
+pub fn resolve_codex_home_for_target(
     target_id: &str,
     scope: InstallScope,
     explicit_codex_home: Option<&str>,
@@ -922,7 +969,7 @@ fn resolve_codex_home_for_target(
         })
 }
 
-fn resolve_backup_store(explicit_backup_dir: Option<&str>) -> BackupStore {
+pub fn resolve_backup_store(explicit_backup_dir: Option<&str>) -> BackupStore {
     let dir = if let Some(p) = explicit_backup_dir {
         PathBuf::from(p)
     } else if let Ok(env_dir) = std::env::var("AI_GUARD_BACKUP_DIR") {

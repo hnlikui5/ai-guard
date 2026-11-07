@@ -1,0 +1,6 @@
+AI Guard (AI卫士)
+Copyright 2026 AI Guard Contributors
+
+This product includes software developed at the AI Guard project.
+Architecture analysis and rule design references are documented in docs/REFERENCES.md.
+No source code from references/ is copied or linked into the build artifacts.

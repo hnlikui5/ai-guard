@@ -1,108 +1,51 @@
-# AI卫士（AI Guard）
+# AI卫士（AI Guard）— 个人版 V0.1
 
-**AI 编程 Agent 安全与运行管理平台**
-
----
-
-## 1. 产品介绍
-
-**AI卫士（AI Guard）** 是一款面向开发者与研发团队的 AI 编程 Agent 本地安全防护与运行管理平台。随着 Codex、Claude Code、OpenCode 等自主编程 Agent 具备直接执行终端命令、读写本地文件系统及访问网络的能力，如何在保障开发效率的同时防止误删文件、破坏性命令执行、敏感密钥泄露与会话丢失，成为核心安全诉求。
-
-AI卫士采用**模块化单体架构**与**本地优先（Local-First）**理念，在不侵入 Agent 核心逻辑的前提下，提供透明的安全拦截、实时人工审批、会话生命周期管理与可靠备份恢复能力。
-
-### 产品版本规划
-
-- **个人版（开源免费）**：纯本地独立运行，提供中文图形化界面、Codex 接入管理、高危命令/文件操作安全拦截、Session 检索与安全备份恢复。
-- **企业版（商业扩展）**：面向研发组织提供多终端集中纳管、企业统一安全策略下发、全量合规审计中心及私有化部署能力（当前阶段仅预留架构边界，暂不实现）。
+**AI卫士（AI Guard）** 是一款运行于 **Windows 宿主机**、同时纳管 **Windows 宿主机本机 Codex（Desktop / CLI）** 与 **WSL2 子系统 Codex CLI** 的本地执行前安全防火墙、脱敏审计与会话只读保护系统。
 
 ---
 
-## 2. V0.1 目标功能
+## 1. 核心架构亮点（宿主机中心化 + 双环境就地拦截）
 
-1. **Agent 状态监控与接入（首期聚焦 Codex）**
-   - 适配 Windows 宿主机桌面端与 WSL2 Ubuntu 内 Codex 运行环境
-   - 对接 Codex App Server 与本地运行状态探测
-2. **安全策略与实时拦截审批**
-   - 拦截危险 Shell 命令、敏感路径访问、高危 Git 操作与密钥外传风险
-   - 支持放行（Allow）、提示审批（Prompt）、阻断（Deny）三级策略裁决
-   - 坚持“默认安全、失败可控（Fail-Closed）”原则
-3. **Session 会话生命周期管理**
-   - 本地会话只读解析、全文与元数据索引、可视化浏览与导出清理
-4. **安全备份与完整性校验**
-   - 会话与配置变更前自动创建快照备份，支持 SHA-256 完整性校验与一键原子恢复
-5. **本地审计与持久化**
-   - 基于本地 SQLite 记录工具调用拦截流水、审批决策与备份记录
+- **宿主机中心化主控**：主控桌面端（Tauri 2 + React）与控制服务运行在 Windows 宿主机，仅监听本地回路 `127.0.0.1:17900`。
+- **双环境就地极速拦截**：
+  - **宿主机目标（`host:windows`）**：挂载 `ai-guard.exe hook codex pre-tool-use`。
+  - **WSL2 目标（`wsl2:<distro>`）**：自动分发 `~/.local/bin/ai-guard-linux` 原生探针并镜像同步 `policy.toml`，实现微秒级就地拦截（P95 `< 0.25ms`），避免跨 OS 管道延迟。
+- **默认安全（Fail-Closed）**：输入为空、超长（> 1 MiB）、非法 UTF-8、JSON 损坏、缺失必填字段或策略文件损坏且无可用快照时，100% 默认返回 `Deny`。
+- **15ms 无锁审计降级与二次强制脱敏**：SQLite WAL 模式 + 15ms 超时熔断降级 `events-fallback.jsonl`；所有落盘与导出数据经过二次 `redact_secrets` 清洗，真实密钥 0 落盘。
+- **会话 100% 只读保护与 SHA-256 事务备份**：通过 `file:<path>?mode=ro&immutable=1` 只读打开 Codex SQLite 会话库，修改任何配置前强制生成带 SHA-256 `manifest.json` 的事务备份。
 
 ---
 
-## 3. 当前开发阶段
+## 2. 快速开始（CLI 核心命令）
 
-- **当前版本**：`V0.1-init`（工程初始化与架构基线阶段）
-- **已完成工作**：
-  - 标准单仓（Monorepo 风格模块化单体）工程目录结构搭建
-  - 架构分层规范、开发规范与 Agent 协作约束（`AGENTS.md`）制定
-  - 第三方开源参考区（`references/`）隔离机制建立，完成 HOL Guard 源码只读引入
-  - M1 阶段历史 Codex Session 成果迁移方案制定
-- **当前限制**：本阶段仅完成工程底座与文档规范初始化，暂未包含具体业务实现与框架依赖安装。
+```bash
+# 1. 诊断宿主机与 WSL2 双环境状态
+ai-guard status --target all --json
 
----
+# 2. 运行双环境隔离沙箱自检（不触碰真实 ~/.codex）
+ai-guard self-test codex --target all --isolated --json
 
-## 4. 工程目录说明
+# 3. 校验策略文件与离线模拟测试规则
+ai-guard rule validate --path config/policy.default.toml --json
+ai-guard rule test --tool Bash --input "rm -fr ~/Documents" --cwd "/workspace" --json
 
-```text
-ai-guard/
-├── apps/
-│   ├── desktop/           # 桌面应用及中文管理界面
-│   └── local-service/     # 本地后台服务与跨环境（Windows/WSL2）通信宿主
-├── packages/
-│   ├── agent-adapters/    # Agent 统一适配层（V0.1 聚焦 Codex）
-│   ├── security/          # 安全策略引擎、高危动作拦截与审批状态机
-│   ├── session/           # Session 读取、解析、索引与管理
-│   ├── backup/            # 备份、恢复与 SHA-256 完整性校验
-│   └── storage/           # SQLite 本地持久化与文件系统存储封装
-├── tests/                 # 集成测试、安全回归测试与端到端测试
-├── scripts/               # 构建、开发自检与迁移辅助脚本
-├── docs/                  # 架构、路线图、参考工程与迁移技术文档
-│   └── decisions/         # 架构决策记录（ADR）
-├── references/            # 第三方开源参考源码区（只读，Git 忽略）
-├── README.md              # 项目说明文档
-├── AGENTS.md              # AI Agent 开发与安全约束规范
-├── .gitignore             # Git 忽略规则配置
-└── .editorconfig          # 跨编辑器代码格式规范
+# 4. 预览无损安装 Unified Diff（--dry-run 不修改磁盘）
+ai-guard install codex --target wsl2:Ubuntu --dry-run
+
+# 5. 只读查看与备份双环境 Codex 会话
+ai-guard session list --target all --limit 20
+ai-guard session backup <session_id> --target wsl2:Ubuntu
+
+# 6. 启动本地回路控制平面与桌面 Web 视图（仅限 127.0.0.1）
+ai-guard serve --bind 127.0.0.1:17900 --static-dir apps/desktop/dist
 ```
 
 ---
 
-## 5. 核心文档索引
+## 3. 安全声明与能力边界
 
-项目详细设计与规范请参阅以下文档路径：
-
-docs/PRD_V0.1.md
-
-docs/ARCHITECTURE.md
-
-docs/REFERENCES.md
-
-docs/ROADMAP.md
-
-docs/M1-MIGRATION.md
-
-AGENTS.md
-
----
-
-## 6. 开源许可证说明
-
-本项目个人版采用 **Apache License 2.0** 开源许可证，完整协议文本请参阅根目录：
-
-LICENSE
-
-架构与许可证决策详情请参阅：
-
-docs/decisions/0001-tech-stack-and-license.md
-
-docs/decisions/0002-security-first-and-phased-session.md
-
-docs/decisions/0003-wsl2-execution-and-desktop-bridge.md
-
-docs/REFERENCES.md
+请在使用前务必阅读：
+- `SECURITY.md`：安全架构与漏洞报告流程
+- `LIMITATIONS.md`：个人版 V0.1 能力边界与已知盲区（**Hook 防护 ≠ OS 内核级全面隔离**）
+- `PRIVACY.md`：本地零上传承诺与二次脱敏机制
+- `INSTALL.md` / `UNINSTALL.md`：无损安装、卸载与故障恢复指南
