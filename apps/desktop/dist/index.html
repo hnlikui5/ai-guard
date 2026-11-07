@@ -686,6 +686,7 @@
         const stData = await stRes.json();
         const evData = await evRes.json();
         const sessData = await sessRes.json();
+        applyRealBundle(stData, evData.events, sessData.sessions, null);
 
         const sessions = sessData.sessions || [];
         document.getElementById('metric-sessions').textContent = `${sessions.length} 条会话`;
@@ -737,6 +738,74 @@
       }
     }
 
+
+    function applyRealBundle(statusObj, eventsArr, sessionsArr, installPrevObj) {
+      if (statusObj && statusObj.targets) {
+        document.getElementById('metric-targets').textContent = statusObj.targets.length + ' 个真实环境';
+        statusObj.targets.forEach(t => {
+          const isHost = t.target_id.startsWith('host');
+          const badge = document.getElementById(isHost ? 'host-state-badge' : 'wsl-state-badge');
+          const homeEl = document.getElementById(isHost ? 'host-codex-home' : 'wsl-codex-home');
+          if (homeEl) homeEl.textContent = t.codex_home;
+          if (badge) {
+            if (t.protection_state === 'protected_verified') {
+              badge.className = 'px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30';
+              badge.textContent = '● 已验证拦截 (protected_verified)';
+            } else if (t.protection_state === 'partially_protected') {
+              badge.className = 'px-2.5 py-1 rounded-full text-xs font-semibold bg-amber-500/15 text-amber-400 border border-amber-500/30';
+              badge.textContent = '▲ 部分受控 / 待挂载 Hook (partially_protected)';
+            } else {
+              badge.className = 'px-2.5 py-1 rounded-full text-xs font-semibold bg-rose-500/15 text-rose-400 border border-rose-500/30';
+              badge.textContent = '○ 未挂载防护 (' + t.protection_state + ')';
+            }
+          }
+        });
+      }
+      if (Array.isArray(sessionsArr)) {
+        document.getElementById('metric-sessions').textContent = sessionsArr.length + ' 条真实会话';
+        const sessContainer = document.getElementById('sessions-container');
+        sessContainer.innerHTML = sessionsArr.map(s => `
+          <div class="p-3 rounded-lg bg-slate-950 border border-slate-800 flex items-center justify-between gap-2">
+            <div class="truncate">
+              <div class="font-semibold text-slate-200 truncate">[${s.target_id}] ${s.title || '(无标题会话)'}</div>
+              <div class="text-slate-400 font-mono truncate">${s.cwd} · id=${s.session_id}</div>
+            </div>
+            <span class="shrink-0 px-2 py-1 rounded bg-emerald-600/20 text-emerald-400 border border-emerald-500/30 font-medium">只读真实会话</span>
+          </div>
+        `).join('');
+      }
+      if (Array.isArray(eventsArr) && eventsArr.length > 0) {
+        const evContainer = document.getElementById('events-container');
+        evContainer.innerHTML = eventsArr.map(e => `
+          <div class="p-4 rounded-xl bg-slate-900 border border-slate-800 space-y-2">
+            <div class="flex items-center justify-between text-xs">
+              <div class="flex items-center gap-2">
+                <span class="px-2 py-0.5 rounded bg-rose-500/15 text-rose-400 font-semibold">${(e.enforcement || 'deny').toUpperCase()}</span>
+                <span class="px-2 py-0.5 rounded bg-purple-500/15 text-purple-400 font-mono">${e.target_id}</span>
+                <span class="font-semibold">${e.reason_code}</span>
+              </div>
+              <span class="text-slate-400 font-mono">event_id: ${e.event_id}</span>
+            </div>
+            <div class="p-2.5 rounded bg-slate-950 border border-slate-800 font-mono text-xs text-slate-300">
+              ${e.redacted_summary}
+            </div>
+          </div>
+        `).join('');
+      }
+      if (installPrevObj && installPrevObj.unified_diff) {
+        const diffBox = document.getElementById('install-diff-box');
+        if (diffBox) diffBox.textContent = installPrevObj.unified_diff;
+      }
+    }
+
+    if (window.__AI_GUARD_REAL_DATA__) {
+      applyRealBundle(
+        window.__AI_GUARD_REAL_DATA__.status,
+        window.__AI_GUARD_REAL_DATA__.events,
+        window.__AI_GUARD_REAL_DATA__.sessions,
+        window.__AI_GUARD_REAL_DATA__.install_preview
+      );
+    }
     loadRealBackendData();
   </script>
 </body>
