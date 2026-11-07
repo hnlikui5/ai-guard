@@ -1,0 +1,82 @@
+# =============================================================================
+# AI Guard (.gitignore)
+# =============================================================================
+
+# Third-party open-source reference repositories (keep README placeholder only)
+references/*
+!references/README.md
+
+# Node.js / Frontend / pnpm
+node_modules/
+.pnpm-store/
+dist/
+build/
+.next/
+.vite/
+.turbo/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+ENV/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.egg-info/
+
+# Rust / Tauri
+target/
+**/*.rs.bk
+
+# Local Databases
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+data/
+
+# Runtime Logs
+logs/
+*.log
+
+# Environment Variables & Local Secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+secrets/
+
+# Temporary Backups & Session Sensitive Data
+backups/
+*.bak
+*.snap
+sessions/
+session-dumps/
+tmp/
+.tmp/
+
+# OS & Editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+*.swp
+*.swo
+*~
