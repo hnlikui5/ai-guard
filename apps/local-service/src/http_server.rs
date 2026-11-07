@@ -40,24 +40,96 @@ pub struct ServeConfig {
     pub policy_path: Option<String>,
 }
 
-/// 自动在系统默认浏览器中打开控制台界面
+/// 自动以独立原生桌面应用窗口（无浏览器地址栏、无标签页）打开控制台界面
 pub fn try_open_browser(url: &str) {
     #[cfg(target_os = "windows")]
     {
-        let _ = std::process::Command::new("cmd")
-            .args(["/C", "start", "", url])
-            .spawn();
+        let app_arg = format!("--app={url}");
+        let size_arg = "--window-size=1280,860";
+        let candidate_bins = [
+            r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+            r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+            r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+            "msedge.exe",
+            "chrome.exe",
+        ];
+
+        let mut opened = false;
+        for bin in candidate_bins {
+            if std::process::Command::new(bin)
+                .args([&app_arg, size_arg])
+                .spawn()
+                .is_ok()
+            {
+                opened = true;
+                break;
+            }
+        }
+
+        // 若均未成功，回退到系统默认 explorer / 协议打开
+        if !opened {
+            if std::process::Command::new("explorer").arg(url).spawn().is_err() {
+                let _ = std::process::Command::new("rundll32")
+                    .args(["url.dll,FileProtocolHandler", url])
+                    .spawn();
+            }
+        }
     }
     #[cfg(not(target_os = "windows"))]
     {
         if std::path::Path::new("/proc/sys/fs/binfmt_misc/WSLInterop").exists() {
-            let _ = std::process::Command::new("powershell.exe")
-                .args(["-NoProfile", "-NonInteractive", "-Command", &format!("Start-Process '{url}'")])
-                .spawn();
+            let win_edge = "/mnt/c/Program Files (x86)/Microsoft/Edge/Application/msedge.exe";
+            let win_chrome = "/mnt/c/Program Files/Google/Chrome/Application/chrome.exe";
+            let app_arg = format!("--app={url}");
+            let opened = if std::path::Path::new(win_edge).exists() {
+                std::process::Command::new(win_edge)
+                    .args([&app_arg, "--window-size=1280,860"])
+                    .spawn()
+                    .is_ok()
+            } else if std::path::Path::new(win_chrome).exists() {
+                std::process::Command::new(win_chrome)
+                    .args([&app_arg, "--window-size=1280,860"])
+                    .spawn()
+                    .is_ok()
+            } else {
+                false
+            };
+
+            if !opened {
+                let _ = std::process::Command::new("powershell.exe")
+                    .args(["-NoProfile", "-NonInteractive", "-Command", &format!("Start-Process 'msedge.exe' -ArgumentList '--app={url} --window-size=1280,860'")])
+                    .spawn();
+            }
         } else {
             let _ = std::process::Command::new("xdg-open").arg(url).spawn();
         }
     }
+}
+
+/// 快速探测指定回路端口上是否已有正在运行的 AI卫士 实例
+fn is_ai_guard_already_running(addr: std::net::SocketAddr) -> bool {
+    let stream_res = TcpStream::connect_timeout(&addr, Duration::from_millis(1500));
+    let mut stream = match stream_res {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(1500)));
+    let _ = stream.set_write_timeout(Some(Duration::from_millis(1500)));
+    let req = format!(
+        "GET /api/health HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
+        addr
+    );
+    if stream.write_all(req.as_bytes()).is_err() {
+        return false;
+    }
+    let mut buf = [0u8; 1024];
+    if let Ok(n) = stream.read(&mut buf) {
+        if let Ok(s) = std::str::from_utf8(&buf[..n]) {
+            return s.contains("ai-guard-local-service");
+        }
+    }
+    false
 }
 
 /// 启动本地回路 HTTP JSON 服务（多线程并发处理浏览器请求 + 3s 空闲读超时保护，防止浏览器预连接阻塞）。
@@ -66,13 +138,62 @@ pub fn run_http_server(
     max_requests_for_test: Option<usize>,
 ) -> Result<(), String> {
     let sock_addr = validate_loopback_bind_addr(&cfg.bind_addr)?;
-    let listener = TcpListener::bind(sock_addr)
-        .map_err(|e| format!("[AG-HTTP-BIND-ERROR] 绑定本地回路 `{sock_addr}` 失败: {e}"))?;
+
+    let mut listener_opt = None;
+    let mut final_addr = sock_addr;
+
+    match TcpListener::bind(sock_addr) {
+        Ok(l) => {
+            listener_opt = Some(l);
+        }
+        Err(e) => {
+            // 1. 先检测当前端口是否已经由 AI 卫士后台实例接管
+            if is_ai_guard_already_running(sock_addr) {
+                if max_requests_for_test.is_none() {
+                    println!("==================================================================");
+                    println!("  AI卫士（AI Guard）服务已在运行中: http://{sock_addr}");
+                    println!("  正在为您在默认浏览器中打开控制台界面...");
+                    println!("==================================================================");
+                    if cfg.auto_open {
+                        try_open_browser(&format!("http://{sock_addr}"));
+                    }
+                    std::thread::sleep(Duration::from_secs(2));
+                }
+                return Ok(());
+            }
+
+            // 2. 若非 AI 卫士，自动尝试备用端口 (17901..=17910)
+            let base_ip = sock_addr.ip();
+            let base_port = sock_addr.port();
+            for fallback_port in (base_port + 1)..=(base_port + 10) {
+                let candidate_addr = std::net::SocketAddr::new(base_ip, fallback_port);
+                if let Ok(l) = TcpListener::bind(candidate_addr) {
+                    println!("提示: 端口 {base_port} 已被占用，已自动切换至空闲端口: http://{candidate_addr}");
+                    listener_opt = Some(l);
+                    final_addr = candidate_addr;
+                    break;
+                }
+            }
+
+            if listener_opt.is_none() {
+                return Err(format!(
+                    "[AG-HTTP-BIND-ERROR] 绑定本地回路 `{sock_addr}` 失败: {e}（且备用端口 17901-17910 均被占用）"
+                ));
+            }
+        }
+    }
+
+    let listener = listener_opt.unwrap();
 
     if max_requests_for_test.is_none() {
-        println!("AI卫士本地控制服务已启动: http://{sock_addr} (严格限制本地回路访问)");
+        println!("==================================================================");
+        println!("  AI卫士（AI Guard）本地安全防护中心已启动");
+        println!("  访问地址: http://{final_addr} (严格限制本地回路访问)");
+        println!("  控制台已在系统默认浏览器中自动打开。");
+        println!("  (请保持本窗口开启以维持防护服务；关闭窗口即可停止服务)");
+        println!("==================================================================");
         if cfg.auto_open {
-            try_open_browser(&format!("http://{sock_addr}"));
+            try_open_browser(&format!("http://{final_addr}"));
         }
     }
 
