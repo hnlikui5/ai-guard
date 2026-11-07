@@ -1,0 +1,35 @@
+[workspace]
+resolver = "2"
+members = [
+    "apps/local-service",
+    "packages/agent-adapters",
+    "packages/security",
+    "packages/backup",
+    "packages/storage",
+    "packages/session",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+authors = ["AI Guard Contributors"]
+repository = "https://github.com/hnlikui5/ai-guard"
+
+[workspace.dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
+clap = { version = "4.5", features = ["derive"] }
+regex = "1.11"
+sha2 = "0.10"
+toml = "0.8"
+
+ai-guard-security = { path = "packages/security" }
+ai-guard-agent-adapters = { path = "packages/agent-adapters" }
+ai-guard-backup = { path = "packages/backup" }
+ai-guard-storage = { path = "packages/storage" }
+ai-guard-session = { path = "packages/session" }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"

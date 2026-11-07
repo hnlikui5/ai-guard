@@ -1,0 +1,23 @@
+[package]
+name = "ai-guard"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "ai-guard"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+ai-guard-security.workspace = true
+ai-guard-agent-adapters.workspace = true
+ai-guard-backup.workspace = true
+ai-guard-storage.workspace = true
+ai-guard-session.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
