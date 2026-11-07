@@ -1031,11 +1031,25 @@
       document.getElementById('diag-view-backups').classList.toggle('hidden', isSess);
     }
 
-    function formatTime(epochOrSecs) {
-      if (!epochOrSecs) return '未知时间';
-      const ms = epochOrSecs > 1e12 ? epochOrSecs : epochOrSecs * 1000;
-      const d = new Date(ms);
-      if (isNaN(d.getTime())) return String(epochOrSecs);
+    function escapeHtml(str) {
+      if (!str) return '';
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
+
+    function formatTime(val) {
+      if (!val) return '未知时间';
+      let d;
+      if (typeof val === 'number' || (/^\d+$/.test(String(val)) && !String(val).includes('T'))) {
+        const num = Number(val);
+        d = new Date(num > 1e12 ? num : num * 1000);
+      } else {
+        d = new Date(val);
+      }
+      if (isNaN(d.getTime())) return String(val);
       return d.toLocaleString('zh-CN', { hour12: false });
     }
 
@@ -1456,7 +1470,7 @@
                 ${envBadge}
                 <span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${s.title || '(未命名对话)'}</span>
               </div>
-              <div class="list-row-desc mono">目录：${cleanCwd} &nbsp;·&nbsp; 活跃时间：${formatTime(s.updated_at)}</div>
+              <div class="list-row-desc mono">目录：${cleanCwd || '（工作区根目录）'} &nbsp;·&nbsp; 活跃时间：${formatTime(s.updated_at)}</div>
             </div>
             <div style="display:flex;gap:8px;flex-shrink:0;">
               <button onclick="viewSessionDetail('${s.target_id}', '${s.session_id}')" class="btn btn-outline btn-sm">详情</button>
@@ -1467,23 +1481,51 @@
       }).join('');
     }
 
-    function viewSessionDetail(targetId, sessionId) {
+    async function viewSessionDetail(targetId, sessionId) {
       const modal = document.getElementById('session-detail-modal');
       modal.classList.remove('hidden');
       const s = ((cachedData && cachedData.sessions) || []).find(x => x.session_id === sessionId) || {};
+      const cleanCwd = (s.cwd || '').replace(/^\\\\\?\\/, '') || '（工作区根目录）';
       modal.innerHTML = `
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
-          <strong style="font-size:14px;color:#1e3a8a;">📄 对话只读详情：${s.title || sessionId}</strong>
+          <strong style="font-size:14px;color:#1e3a8a;">📄 对话只读详情：${escapeHtml(s.title || sessionId)}</strong>
           <button onclick="document.getElementById('session-detail-modal').classList.add('hidden')" class="btn btn-outline btn-sm">关闭</button>
         </div>
         <div class="kv-list" style="background:#fff;">
           <div class="kv-row"><span class="kv-label">所属环境</span><span class="kv-val">${targetId}</span></div>
           <div class="kv-row"><span class="kv-label">对话 ID</span><code class="kv-val mono">${sessionId}</code></div>
-          <div class="kv-row"><span class="kv-label">项目目录 (cwd)</span><code class="kv-val mono">${(s.cwd || '').replace(/^\\\\\?\\/, '')}</code></div>
-          <div class="kv-row"><span class="kv-label">源数据库路径</span><code class="kv-val mono">${s.source_sqlite_path || '-'} (只读模式)</code></div>
+          <div class="kv-row"><span class="kv-label">项目目录 (cwd)</span><code class="kv-val mono">${escapeHtml(cleanCwd)}</code></div>
+          <div class="kv-row"><span class="kv-label">活跃时间</span><span class="kv-val">${formatTime(s.updated_at)}</span></div>
+          <div class="kv-row"><span class="kv-label">源文件索引</span><code class="kv-val mono">${(s.source_files || []).join(', ') || '-'}</code></div>
+          <div id="session-detail-extra" style="margin-top:10px;">⏳ 正在读取会话事件与轮次详情...</div>
         </div>
       `;
       modal.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+
+      try {
+        const res = await fetch(API_BASE + '/api/sessions/detail?target_id=' + encodeURIComponent(targetId) + '&session_id=' + encodeURIComponent(sessionId));
+        const data = await res.json();
+        const extraBox = document.getElementById('session-detail-extra');
+        if (data.ok && data.detail && extraBox) {
+          const d = data.detail;
+          extraBox.innerHTML = `
+            <div style="margin-top:10px;padding-top:10px;border-top:1px dashed var(--border);">
+              <div style="display:flex;gap:16px;margin-bottom:8px;font-size:13px;flex-wrap:wrap;">
+                <span><strong>对话轮次：</strong>${d.turns_count} 轮</span>
+                <span><strong>历史事件数：</strong>${d.rollout_events_count} 条</span>
+                <span><strong>Rollout 归档：</strong>${d.rollout_path ? '✓ 存在' : '未检测到'}</span>
+              </div>
+              ${d.redacted_preview ? `
+                <div style="font-size:12px;color:var(--muted);margin-bottom:4px;">对话内容摘要预览（敏感密钥自动脱敏）：</div>
+                <pre class="diff-view" style="max-height:160px;overflow-y:auto;background:#f8fafc;padding:10px;border-radius:6px;font-size:12px;">${escapeHtml(d.redacted_preview)}</pre>
+              ` : ''}
+              <div style="margin-top:10px;">
+                <button onclick="backupSession('${targetId}', '${sessionId}')" class="btn btn-primary btn-sm">📦 为此对话创建 SHA-256 安全备份</button>
+              </div>
+            </div>
+          `;
+        }
+      } catch (_) {}
     }
 
     async function backupSession(targetId, sessionId) {

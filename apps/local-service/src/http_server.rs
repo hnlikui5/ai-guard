@@ -370,10 +370,11 @@ fn build_bootstrap_json(cfg: &ServeConfig) -> Value {
     let backups = bstore.list_backups(None).unwrap_or_default();
     let policies = default_policy_engine().config().clone();
 
-    let wsl_home = crate::resolve_codex_home_for_target("wsl2:Ubuntu", InstallScope::User, None);
+    let (wsl_distro, wsl_home) = crate::discover_wsl_distro_and_codex_home(None);
+    let wsl_tid = format!("wsl2:{wsl_distro}");
     let wsl_preview = install_codex_hook(
         &InstallRequest {
-            target_id: "wsl2:Ubuntu".to_string(),
+            target_id: wsl_tid,
             scope: InstallScope::User,
             codex_home: wsl_home,
             hook_command: "ai-guard hook codex pre-tool-use".to_string(),
@@ -675,9 +676,14 @@ fn route_api_request(
         ("GET", "/api/sessions/detail") => {
             let tid = query
                 .get("target")
+                .or_else(|| query.get("target_id"))
                 .map(|s| s.as_str())
-                .unwrap_or("wsl2:Ubuntu");
-            let sid = query.get("id").map(|s| s.as_str()).unwrap_or("");
+                .unwrap_or("wsl2:Ubuntu-24.04");
+            let sid = query
+                .get("id")
+                .or_else(|| query.get("session_id"))
+                .map(|s| s.as_str())
+                .unwrap_or("");
             let codex_home = crate::resolve_codex_home_for_target(tid, InstallScope::User, None);
             match get_codex_session_detail(tid, &codex_home, sid) {
                 Ok(detail) => (200, json!({ "ok": true, "detail": detail })),
@@ -764,8 +770,7 @@ fn route_api_request(
             let bstore = crate::resolve_backup_store(cfg.backup_dir.as_deref());
 
             let targets_to_run: Vec<String> = if tid_raw == "all" {
-                let distro =
-                    std::env::var("WSL_DISTRO_NAME").unwrap_or_else(|_| "Ubuntu".to_string());
+                let (distro, _) = crate::discover_wsl_distro_and_codex_home(None);
                 vec![format!("wsl2:{distro}"), "host:windows".to_string()]
             } else {
                 vec![tid_raw.to_string()]
@@ -834,8 +839,7 @@ fn route_api_request(
             let bstore = crate::resolve_backup_store(cfg.backup_dir.as_deref());
 
             let targets_to_run: Vec<String> = if tid_raw == "all" {
-                let distro =
-                    std::env::var("WSL_DISTRO_NAME").unwrap_or_else(|_| "Ubuntu".to_string());
+                let (distro, _) = crate::discover_wsl_distro_and_codex_home(None);
                 vec![format!("wsl2:{distro}"), "host:windows".to_string()]
             } else {
                 vec![tid_raw.to_string()]

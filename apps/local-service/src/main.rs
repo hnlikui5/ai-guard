@@ -306,16 +306,15 @@ pub fn collect_doctor_report(
 
     // 1. 探测 WSL2 当前环境目标
     if filter == "all" || filter.starts_with("wsl2") {
-        let distro = std::env::var("WSL_DISTRO_NAME").unwrap_or_else(|_| "Ubuntu".to_string());
+        let (distro, default_wsl_home) = discover_wsl_distro_and_codex_home(if filter == "all" {
+            None
+        } else {
+            Some(target_filter)
+        });
         let wsl_home = if let Some(explicit) = explicit_codex_home {
             PathBuf::from(explicit)
         } else {
-            std::env::var("CODEX_HOME")
-                .map(PathBuf::from)
-                .unwrap_or_else(|_| {
-                    let home = std::env::var("HOME").unwrap_or_else(|_| "/home/ai-li".to_string());
-                    PathBuf::from(home).join(".codex")
-                })
+            default_wsl_home
         };
         let tid = format!("wsl2:{distro}");
         let last_st = store.latest_self_test(&tid).ok().flatten();
@@ -481,7 +480,7 @@ pub fn execute_self_test_runs(
     let store = AuditStore::resolve_default(explicit_db_path);
     let _ = store.init_schema();
 
-    let distro = std::env::var("WSL_DISTRO_NAME").unwrap_or_else(|_| "Ubuntu".to_string());
+    let (distro, _) = discover_wsl_distro_and_codex_home(None);
     let wsl_tid = format!("wsl2:{distro}");
     let filter = target_filter.trim().to_ascii_lowercase();
 
@@ -805,10 +804,13 @@ pub fn collect_sessions_readonly(
         }
     } else {
         if filter == "all" || filter.starts_with("wsl2") {
-            let distro = std::env::var("WSL_DISTRO_NAME").unwrap_or_else(|_| "Ubuntu".to_string());
-            let wsl_home =
-                resolve_codex_home_for_target(&format!("wsl2:{distro}"), InstallScope::User, None);
-            if let Ok(mut list) = list_codex_sessions(&format!("wsl2:{distro}"), &wsl_home, limit) {
+            let (distro, wsl_home) = discover_wsl_distro_and_codex_home(if filter == "all" {
+                None
+            } else {
+                Some(target_filter)
+            });
+            let tid = format!("wsl2:{distro}");
+            if let Ok(mut list) = list_codex_sessions(&tid, &wsl_home, limit) {
                 all_sessions.append(&mut list);
             }
         }
@@ -962,6 +964,78 @@ fn discover_windows_host_codex_home() -> Option<PathBuf> {
     fallback
 }
 
+pub fn discover_wsl_distro_and_codex_home(distro_hint: Option<&str>) -> (String, PathBuf) {
+    if !cfg!(windows) {
+        let distro = std::env::var("WSL_DISTRO_NAME").unwrap_or_else(|_| "Ubuntu-24.04".to_string());
+        let home = std::env::var("CODEX_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| {
+                let h = std::env::var("HOME").unwrap_or_else(|_| "/home/ai-li".to_string());
+                PathBuf::from(h).join(".codex")
+            });
+        return (distro, home);
+    }
+
+    let mut candidate_distros: Vec<String> = Vec::new();
+    if let Some(hint) = distro_hint {
+        let clean = hint.trim().strip_prefix("wsl2:").unwrap_or(hint).trim();
+        if !clean.is_empty() && clean != "all" && clean != "wsl2" {
+            candidate_distros.push(clean.to_string());
+        }
+    }
+    for default_name in ["Ubuntu-24.04", "Ubuntu", "Debian"] {
+        if !candidate_distros.iter().any(|d| d.eq_ignore_ascii_case(default_name)) {
+            candidate_distros.push(default_name.to_string());
+        }
+    }
+
+    // 在 Windows 端尝试探测 wsl.exe -l -q 中的可用发行版
+    if let Ok(output) = std::process::Command::new("wsl.exe").args(["-l", "-q"]).output() {
+        if output.status.success() {
+            let text = if output.stdout.contains(&0) {
+                let u16_vec: Vec<u16> = output
+                    .stdout
+                    .chunks_exact(2)
+                    .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
+                    .collect();
+                String::from_utf16_lossy(&u16_vec)
+            } else {
+                String::from_utf8_lossy(&output.stdout).to_string()
+            };
+            for line in text.lines() {
+                let d = line.trim().replace('\0', "");
+                if !d.is_empty() && !candidate_distros.iter().any(|c| c.eq_ignore_ascii_case(&d)) {
+                    candidate_distros.push(d);
+                }
+            }
+        }
+    }
+
+    // Windows 访问 WSL2 文件系统通过标准 UNC 路径：\\wsl.localhost\<distro>\home 或 \\wsl$\<distro>\home
+    for distro in &candidate_distros {
+        for prefix in [r"\\wsl.localhost", r"\\wsl$"] {
+            let home_base = PathBuf::from(format!(r"{prefix}\{distro}\home"));
+            if let Ok(entries) = std::fs::read_dir(&home_base) {
+                for entry in entries.flatten() {
+                    let candidate = entry.path().join(".codex");
+                    if candidate.join("config.toml").is_file() || candidate.join("session_index.jsonl").is_file() {
+                        return (distro.clone(), candidate);
+                    }
+                }
+            }
+        }
+    }
+
+    let fallback_distro = candidate_distros
+        .first()
+        .cloned()
+        .unwrap_or_else(|| "Ubuntu-24.04".to_string());
+    (
+        fallback_distro.clone(),
+        PathBuf::from(format!(r"\\wsl.localhost\{fallback_distro}\home\ai-li\.codex")),
+    )
+}
+
 pub fn resolve_codex_home_for_target(
     target_id: &str,
     scope: InstallScope,
@@ -979,6 +1053,10 @@ pub fn resolve_codex_home_for_target(
         if let Some(win) = discover_windows_host_codex_home() {
             return win;
         }
+    }
+    if target_id.starts_with("wsl2") {
+        let (_, wsl_home) = discover_wsl_distro_and_codex_home(Some(target_id));
+        return wsl_home;
     }
     std::env::var("CODEX_HOME")
         .map(PathBuf::from)

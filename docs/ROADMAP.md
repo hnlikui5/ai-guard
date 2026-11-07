@@ -15,34 +15,35 @@
 - [x] 确立“Windows 宿主机主控桌面软件 + 同时纳管宿主机 Codex（`C:\Users\<User>\.codex`）与 WSL2 Codex（`/home/<user>/.codex`）”的分阶段开发 PRD（`docs/PRD_V0.1.md`）
 
 ### 1.1 Phase 0（M0）：双环境基线审计与 Codex Hook 协议实测
-- [ ] 安装 Rust stable 工具链（配置 Linux 与 Windows 双编译目标）并锁定 `rust-toolchain.toml`
-- [ ] 在隔离临时目录实测宿主机 Codex（`0.166.0+`）与 WSL2 `codex-cli`（`0.160.1+`）的 `PreToolUse` Hook 输入/输出协议、工具名映射及 `app-server-daemon` 刷新行为
-- [ ] 输出 `docs/BASELINE.md`、`docs/CODEX_HOOK_CONTRACT.md`、`docs/COMPATIBILITY.md` 与 `tests/fixtures/codex/`
+- [x] 安装 Rust stable 工具链（配置 Linux 与 Windows 双编译目标）并锁定 `rust-toolchain.toml`
+- [x] 在隔离临时目录实测宿主机 Codex（`0.166.0+`）与 WSL2 `codex-cli`（`0.160.1+`）的 `PreToolUse` Hook 输入/输出协议、工具名映射及 `app-server-daemon` 刷新行为
+- [x] 输出 `docs/BASELINE.md`、`docs/CODEX_HOOK_CONTRACT.md`、`docs/COMPATIBILITY.md` 与 `tests/fixtures/codex/`
 
 ### 1.2 Phase 1（M1 + M2）：Rust 跨平台安全内核与真实执行前拦截 PoC（产品生死线）
-- [ ] 建立根 `Cargo.toml` Workspace，打通 `apps/local-service`（同源编译宿主机 `ai-guard.exe` 与 WSL2 `ai-guard-linux`）与 `packages/*`
-- [ ] 实现 `ManagedTarget`（`WindowsHost` / `Wsl2Distro`）、`ActionEvent` / `Decision` 领域模型、`CodexHookAdapter` 及异常默认拒绝（Fail-Closed）机制
-- [ ] 在隔离环境中通过真实 Codex 执行前拒绝（Deny）E2E 验证，证明副作用文件未生成
+- [x] 建立根 `Cargo.toml` Workspace，打通 `apps/local-service`（同源编译宿主机 `ai-guard.exe` 与 WSL2 `ai-guard-linux`）与 `packages/*`
+- [x] 实现 `ManagedTarget`（`WindowsHost` / `Wsl2Distro`）、`ActionEvent` / `Decision` 领域模型、`CodexHookAdapter` 及异常默认拒绝（Fail-Closed）机制
+- [x] 在隔离环境中通过真实 Codex 执行前拒绝（Deny）E2E 验证，证明副作用文件未生成
 
 ### 1.3 Phase 2（M3）：TOML 策略引擎、跨平台内置高危规则包与离线测试
-- [ ] 实现 `policy.toml` 编译校验、优先级裁决与防降级快照回退
-- [ ] 交付 V0.1 跨平台高置信度规则集（同时覆盖 Linux Bash/sh 与 Windows PowerShell/CMD 破坏性命令、管道下载执行、POSIX/Windows 敏感凭据路径保护、危险 Git 操作）
-- [ ] 实现 `ai-guard rule validate` 与 `ai-guard rule test` 纯内存模拟测试
+- [x] 实现 `policy.toml` 编译校验、优先级裁决与防降级快照回退
+- [x] 交付 V0.1 跨平台高置信度规则集（同时覆盖 Linux Bash/sh 与 Windows PowerShell/CMD 破坏性命令、管道下载执行、POSIX/Windows 敏感凭据路径保护、危险 Git 操作）
+- [x] 实现 `ai-guard rule validate` 与 `ai-guard rule test` 纯内存模拟测试
 
 ### 1.4 Phase 3（M4）：`packages/backup` 事务备份、双环境 Hook 安装器与受管启动
-- [ ] 实现 `packages/backup` 跨平台快照创建、SHA-256 完整性校验与原子恢复底座
-- [ ] 实现针对宿主机 `.codex` 与 WSL2 `.codex` 的 `ai-guard install/uninstall codex`（支持 `--dry-run` Diff 预览、保留用户既有第三方 Hook）
-- [ ] 实现 `ai-guard run codex` 受管启动与 Preflight 安全检查
+- [x] 实现 `packages/backup` 跨平台快照创建、SHA-256 完整性校验与原子恢复底座
+- [x] 实现针对宿主机 `.codex` 与 WSL2 `.codex` 的 `ai-guard install/uninstall codex`（支持 `--dry-run` Diff 预览、保留用户既有第三方 Hook）
+- [x] 实现 `ai-guard run codex` 受管启动与 Preflight 安全检查
 
 ### 1.5 Phase 4（M5 + Phase 4B M1 迁移）：SQLite 脱敏审计、双环境事件同步与 Session 保护
-- [ ] 实现 `packages/storage` SQLite（WAL + 15ms 超时无锁 fallback）、敏感凭据自动脱敏器及 WSL2 审计事件向宿主机主库的增量同步归并
-- [ ] 实现 `ai-guard self-test codex --isolated` 一键隔离自检与 `ai-guard status --json` 四态汇总
-- [ ] **Phase 4B**：迁入原 M1 阶段 Codex Session 成果至 `packages/session`，支持对宿主机 `C:\Users\<User>\.codex` 与 WSL2 `~/.codex` 会话的统一只读索引浏览与 SHA-256 安全备份
+- [x] 实现 `packages/storage` SQLite（WAL + 15ms 超时无锁 fallback）、敏感凭据自动脱敏器及 WSL2 审计事件向宿主机主库的增量同步归并
+- [x] 实现 `ai-guard self-test codex --isolated` 一键隔离自检与 `ai-guard status --json` 四态汇总
+- [x] **Phase 4B**：迁入原 M1 阶段 Codex Session 成果至 `packages/session`，支持对宿主机 `C:\Users\<User>\.codex` 与 WSL2 `~/.codex` 会话的统一只读索引浏览与 SHA-256 安全备份
 
-### 1.6 Phase 5（M6 + M7）：Windows 宿主机 Tauri 2 中文主控桌面端与 V0.1 个人版发布
-- [ ] 实现宿主机主控桌面端（`apps/desktop`）及 `TargetManager`（本机直管 `WindowsHost` + `wsl.exe --exec` 受限桥接管理 `Wsl2Distro` 并自动下发 `ai-guard-linux` 探针与策略镜像）
-- [ ] 交付六大中文核心管理页面（安全概览、双环境 Agent 管理、安全策略、统一风险事件、防护诊断/安装/Session 备份、设置与隐私）
-- [ ] 完成宿主机独立运行与 WSL2 联动全量验收（`AT-01` ～ `AT-12` 与 `SEC-E2E-001` ～ `SEC-E2E-012`）及 V0.1 开源合规发布
+### 1.6 Phase 5（M6 + M7）：Windows 宿主机 Tauri 2/独立桌面端与 V0.1 个人版发布
+- [x] 实现宿主机主控桌面端（`apps/desktop`）及 `TargetManager`（本机直管 `WindowsHost` + `wsl.exe --exec` 受限桥接管理 `Wsl2Distro` 并自动下发 `ai-guard-linux` 探针与策略镜像）
+- [x] 交付六大中文核心管理页面（安全概览、双环境 Agent 管理、安全策略、统一风险事件、防护诊断/安装/Session 备份、设置与隐私）
+- [x] 支持 Windows 系统托盘常驻运行、管家式紧凑应用窗口（980x640）、条件框吸顶固定与数据区域独立滚动、静默无黑窗口启动
+- [x] 完成宿主机独立运行与 WSL2 联动全量验收（`AT-01` ～ `AT-12` 与 `SEC-E2E-001` ～ `SEC-E2E-012`）及 V0.1 NSIS 安装包打包发布
 
 ---
 
