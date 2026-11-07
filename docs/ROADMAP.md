@@ -1,70 +1,64 @@
 # AI卫士（AI Guard）产品研发路线图（Roadmap）
 
-本文档规划 **AI卫士（AI Guard）** 从 V0.1 个人版基线到多 Agent 扩展及未来企业版演进的阶段性研发目标。
+本文档规划 **AI卫士（AI Guard）** 从 V0.1 个人版基线到多 Agent 扩展及未来企业版演进的阶段性研发目标。各阶段详细功能规格、接口契约与验收门禁以 `docs/PRD_V0.1.md` 为准。
 
 ---
 
-## 阶段一：V0.1 个人版核心研发（当前阶段）
+## 阶段一：V0.1 个人版分阶段研发（Phase 0 ～ Phase 5）
 
-**核心目标**：打通“Codex 接入 + 本地安全拦截审批 + Session 索引与备份恢复 + 中文桌面管理端”最小完整闭环，实现 Windows + WSL2 环境下的稳定独立运行。
+**核心策略**：坚持“**安全主线优先（真实 Hook 拦截 + 零副作用证明）+ `packages/backup` 事务备份前置 + M1 Session 成果阶段性汇入**”。
 
-### 1.1 M0：工程初始化与架构基线（本次任务）
-- [x] 建立模块化单体工程目录结构与代码规范
-- [x] 完成 `references/hol-guard` 只读参考区引入与登记
-- [x] 制定架构设计、参考合规与 M1 成果迁移计划
+### 1.0 已完成基线：工程初始化与规划定稿
+- [x] 建立模块化单体工程目录结构与 `AGENTS.md` 开发规范
+- [x] 完成 `references/hol-guard`（v3.59.0）只读参考区引入与登记
+- [x] 确定 Apache License 2.0 开源许可证与 Rust 核心技术栈（`ADR-0001` ～ `ADR-0003`）
+- [x] 完成分阶段开发 PRD（`docs/PRD_V0.1.md`）评估优化与定稿
 
-### 1.2 M1 成果整合与存储底座（V0.1-alpha 阶段 1）
-- [ ] 建立 `packages/storage` 本地 SQLite 存储底座与目录规范
-- [ ] 按 `docs/M1-MIGRATION.md` 迁移并验证既有 Codex Session 读取与管理代码至 `packages/session`
-- [ ] 实现 `packages/backup` 会话快照备份、SHA-256 完整性校验与原子恢复能力
+### 1.1 Phase 0（M0）：环境基线审计与 Codex 0.160.1 Hook 协议实测
+- [ ] 安装 WSL2 Rust stable 工具链并锁定 `rust-toolchain.toml`
+- [ ] 在隔离临时目录实测本机 `codex-cli 0.160.1` 的 `PreToolUse` Hook 输入/输出协议、工具名映射及 `app-server-daemon` 交互行为
+- [ ] 输出 `docs/BASELINE.md`、`docs/CODEX_HOOK_CONTRACT.md`、`docs/COMPATIBILITY.md` 与 `tests/fixtures/codex/`
 
-### 1.3 Codex 适配与安全拦截内核（V0.1-alpha 阶段 2）
-- [ ] 实现 `packages/agent-adapters` 中的 Codex 适配器（本地运行状态探测 + Codex App Server / Hook 对接）
-- [ ] 实现 `packages/security` 策略引擎核心：
-  - 高危 Shell 命令识别（如递归删除、磁盘格式化、危险权限变更）
-  - 敏感路径保护（如 `~/.ssh`、`.env`、系统关键目录）
-  - 危险 Git 操作识别（如强制推送、硬重置未提交代码）
-  - 默认安全（Fail-Closed）裁决与本地审批等待状态机
-- [ ] 将拦截与审批流水持久化至本地审计日志表
+### 1.2 Phase 1（M1 + M2）：Rust 安全内核与真实执行前拦截 PoC（产品生死线）
+- [ ] 建立根 `Cargo.toml` Workspace，打通 `apps/local-service`（`ai-guard` CLI）与 `packages/*`
+- [ ] 实现 `ActionEvent` / `Decision` 领域模型、`CodexHookAdapter` 及异常默认拒绝（Fail-Closed）机制
+- [ ] 在隔离环境中通过真实 `codex-cli 0.160.1` 执行前拒绝（Deny）E2E 验证，证明副作用文件未生成
 
-### 1.4 本地服务与中文桌面端联调（V0.1-beta & 正式版）
-- [ ] 实现 `apps/local-service` 本地控制服务接口（打通 WSL2 与 Windows 宿主机通信）
-- [ ] 实现 `apps/desktop` 全中文管理界面：
-  - Codex 运行状态看板
-  - 实时高危操作拦截弹窗与一键批准/拒绝
-  - 安全策略开关与自定义规则配置页
-  - Session 搜索、详情查看、备份与恢复操作页
-- [ ] 完成端到端安全回归测试与 V0.1 个人版发布打包
+### 1.3 Phase 2（M3）：TOML 策略引擎、内置高危规则包与离线测试
+- [ ] 实现 `policy.toml` 编译校验、优先级裁决与防降级快照回退
+- [ ] 交付 V0.1 内置高置信度规则集（破坏性 Shell、管道下载执行、敏感凭据路径保护、危险 Git 操作）
+- [ ] 实现 `ai-guard rule validate` 与 `ai-guard rule test` 纯内存模拟测试
+
+### 1.4 Phase 3（M4）：`packages/backup` 事务备份、Hook 安装器与受管启动
+- [ ] 实现 `packages/backup` 快照创建、SHA-256 完整性校验与原子恢复底座
+- [ ] 实现 `ai-guard install/uninstall codex`（支持 `--dry-run` Diff 预览、保留用户既有第三方 Hook）
+- [ ] 实现 `ai-guard run codex` 受管启动与 Preflight 安全检查
+
+### 1.5 Phase 4（M5 + Phase 4B M1 迁移）：SQLite 脱敏审计、四态自检与 Session 保护
+- [ ] 实现 `packages/storage` SQLite（WAL + 15ms 超时无锁 fallback）与敏感凭据自动脱敏器
+- [ ] 实现 `ai-guard self-test codex --isolated` 一键隔离自检与 `ai-guard status --json` 四态汇总
+- [ ] **Phase 4B**：迁入原 M1 阶段 Codex Session 成果至 `packages/session`，支持会话只读索引浏览与 SHA-256 安全备份
+
+### 1.6 Phase 5（M6 + M7）：Windows Tauri 2 中文桌面端与 V0.1 个人版发布
+- [ ] 实现 Windows Tauri 2 到 WSL2 `ai-guard` 的受限白名单 `wsl.exe --exec` 桥接
+- [ ] 交付六大中文核心管理页面（安全概览、Agent 管理、安全策略、风险事件、防护诊断/安装、设置与隐私）
+- [ ] 完成 `AT-01` ～ `AT-12` 与 `SEC-E2E-001` ～ `SEC-E2E-012` 全量验收及 V0.1 开源合规发布
 
 ---
 
-## 阶段二：V0.2 ~ V0.3 多 Agent 扩展与深度防护
-
-**核心目标**：在稳定支持 Codex 的基础上，验证统一适配层架构，扩展主流 AI 编程 Agent，并强化运行时与网络层防护。
+## 阶段二：Phase 6A（V0.2 ~ V0.3）多 Agent 扩展与 OS 内核级沙箱
 
 1. **多 Agent 适配扩展（`packages/agent-adapters`）**
-   - 接入 **Claude Code**：支持其 Hook 机制与本地会话解析索引
-   - 接入 **OpenCode**：支持其工具调用拦截与会话管理
-   - 实现跨 Agent 统一会话时间线视图与统一安全策略复用
-2. **运行时隔离与防泄漏增强（`packages/security`）**
-   - 研究并吸收 `nono` 的设计思路，引入轻量级进程权限边界与文件系统沙箱隔离
-   - 研究并吸收 `Pipelock` 的设计思路，增加针对敏感凭证外传（Outbound DLP）与管道命令绕过的检测拦截
-3. **备份策略升级（`packages/backup`）**
-   - 支持增量会话快照、定时自动备份与加密归档导出
+   - 接入 **Claude Code** 与 **OpenCode**，独立完成各自原生 Hook 协议契约与真实拦截 E2E 验证
+2. **OS 级沙箱与防外传增强（`packages/security`）**
+   - 开展 `nono` / Linux Landlock 内核隔离 PoC，提供文件系统读写白名单与网络外传（Pipelock 思路）强制边界
+3. **跨 Agent Session 治理升级（`packages/session`、`packages/backup`）**
+   - 支持跨 Agent 会话检索、增量快照备份与带冲突检测的会话恢复
 
 ---
 
-## 阶段三：V1.0+ 企业版商业能力演进（远期规划）
+## 阶段三：Phase 6B（V1.0+）企业版商业能力演进（独立私有仓库）
 
-**核心目标**：在个人版开源生态成熟的基础上，面向企业研发安全团队提供集中管控与合规审计平台（当前仅预留架构边界，不提前开发）。
-
-1. **终端集中纳管**
-   - 企业内开发终端 Agent 资产盘点、在线状态监控与版本合规检查
-2. **企业级统一安全策略中心**
-   - 组织级/项目级强制安全红线策略下发（终端只读锁定，不可私自降级）
-   - 企业内部敏感代码库与私有密钥特征库同步
-3. **集中审计与合规报表**
-   - 终端安全拦截事件、高危审批记录异步加密汇总至企业审计中心
-   - 满足金融、政企等行业的研发安全合规审计追溯要求
-4. **私有化部署支持**
-   - 提供企业内网全离线私有化部署套件与企业 SSO / IM 审批集成
+1. **终端设备注册与资产盘点**：设备证书（mTLS）身份准入、在线状态监控与防护覆盖率盘点
+2. **Ed25519 签名策略中心**：组织级强制安全基线下发，防止终端私自降级规则
+3. **集中脱敏审计与 RBAC**：基于 Rust Axum + PostgreSQL + OIDC 的多租户审计汇聚与私有化部署套件

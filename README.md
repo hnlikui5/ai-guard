@@ -77,6 +77,8 @@ ai-guard/
 
 项目详细设计与规范请参阅以下文档路径：
 
+docs/PRD_V0.1.md
+
 docs/ARCHITECTURE.md
 
 docs/REFERENCES.md
@@ -89,8 +91,18 @@ AGENTS.md
 
 ---
 
-## 6. 开源许可证说明（待确认）
+## 6. 开源许可证说明
 
-当前工程处于初始化阶段，尚未最终选定并生成根目录 `LICENSE` 文件。关于个人版开源协议推荐方案（如 Apache-2.0 等）及第三方参考代码合规要求，详见：
+本项目个人版采用 **Apache License 2.0** 开源许可证，完整协议文本请参阅根目录：
+
+LICENSE
+
+架构与许可证决策详情请参阅：
+
+docs/decisions/0001-tech-stack-and-license.md
+
+docs/decisions/0002-security-first-and-phased-session.md
+
+docs/decisions/0003-wsl2-execution-and-desktop-bridge.md
 
 docs/REFERENCES.md
