@@ -903,6 +903,9 @@
             <!-- 会话详情展开卡 -->
             <div id="session-detail-modal" class="panel hidden" style="border-color:#93c5fd;background:#eff6ff;margin-bottom:12px;"></div>
 
+            <!-- 跨智能体会话迁移向导卡 -->
+            <div id="session-migration-modal" class="panel hidden" style="border-color:#818cf8;background:#f5f3ff;margin-bottom:12px;"></div>
+
             <!-- 数据可滚动区域 -->
             <div class="scrollable-data-list" style="max-height:calc(100vh - 170px);overflow-y:auto;padding-right:4px;">
               <!-- 子视图 A：103 条历史对话 -->
@@ -1510,7 +1513,8 @@
             </div>
             <div style="display:flex;gap:8px;flex-shrink:0;">
               <button onclick="viewSessionDetail('${s.target_id}', '${s.session_id}')" class="btn btn-outline btn-sm">详情</button>
-              <button onclick="backupSession('${s.target_id}', '${s.session_id}')" class="btn btn-primary btn-sm">备份对话</button>
+              <button onclick="backupSession('${s.target_id}', '${s.session_id}')" class="btn btn-primary btn-sm">备份</button>
+              <button onclick="openMigrationModal('${s.target_id}', '${s.session_id}')" class="btn btn-sm" style="background:#e0e7ff;color:#4338ca;border:1px solid #c7d2fe;font-weight:600;">🚀 跨 Agent 迁移</button>
             </div>
           </div>
         `;
@@ -1581,6 +1585,150 @@
         }
       } catch (_) {
         showBannerToast('💡 可在终端执行：<code>ai-guard session backup ' + sessionId + ' --target ' + targetId + '</code> 完成备份。', true);
+      }
+    }
+
+    function openMigrationModal(targetId, sessionId) {
+      const modal = document.getElementById('session-migration-modal');
+      modal.classList.remove('hidden');
+      const s = ((cachedData && cachedData.sessions) || []).find(x => x.session_id === sessionId) || {};
+      
+      let sourceAgent = 'codex';
+      let sourceBadge = '<span class="badge badge-blue">OpenAI Codex</span>';
+      if (targetId.includes('AGY')) {
+        sourceAgent = 'agy';
+        sourceBadge = '<span class="badge" style="background:#e0e7ff;color:#3730a3;">Google Antigravity (AGY)</span>';
+      } else if (targetId.toLowerCase().includes('opencode')) {
+        sourceAgent = 'opencode';
+        sourceBadge = '<span class="badge" style="background:#fef3c7;color:#92400e;">OpenCode</span>';
+      }
+
+      let targetOptions = '';
+      if (sourceAgent === 'codex') {
+        targetOptions = `
+          <option value="agy">🚀 Google Antigravity (AGY)</option>
+          <option value="opencode">⚡ OpenCode</option>
+        `;
+      } else if (sourceAgent === 'agy') {
+        targetOptions = `
+          <option value="codex">💻 OpenAI Codex</option>
+          <option value="opencode">⚡ OpenCode</option>
+        `;
+      } else {
+        targetOptions = `
+          <option value="codex">💻 OpenAI Codex</option>
+          <option value="agy">🚀 Google Antigravity (AGY)</option>
+        `;
+      }
+
+      modal.innerHTML = `
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+          <strong style="font-size:15px;color:#312e81;">🔄 跨智能体会话无损迁移向导</strong>
+          <button onclick="document.getElementById('session-migration-modal').classList.add('hidden')" class="btn btn-outline btn-sm">关闭</button>
+        </div>
+        <div style="background:#fff;border-radius:6px;padding:14px;border:1px solid #c7d2fe;margin-bottom:12px;">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+            <span style="font-weight:600;font-size:13px;">源会话：</span>
+            ${sourceBadge}
+            <span style="font-weight:600;color:#1e293b;">${escapeHtml(s.title || sessionId)}</span>
+          </div>
+          <div style="font-size:12px;color:var(--muted);margin-bottom:12px;" class="mono">
+            会话 ID: ${sessionId} &nbsp;·&nbsp; 源环境: ${targetId}
+          </div>
+
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px;">
+            <div>
+              <label style="display:block;font-size:12px;font-weight:600;margin-bottom:4px;">🎯 目标智能体生态：</label>
+              <select id="mig-target-agent" class="input-control" style="width:100%;height:32px;font-size:12px;">
+                ${targetOptions}
+              </select>
+            </div>
+            <div>
+              <label style="display:block;font-size:12px;font-weight:600;margin-bottom:4px;">⚙️ 跨系统路径重映射：</label>
+              <label style="display:flex;align-items:center;gap:6px;font-size:12px;margin-top:6px;cursor:pointer;">
+                <input type="checkbox" id="mig-remap-paths" checked />
+                <span>自动转换 Windows ⇄ WSL2 POSIX 路径</span>
+              </label>
+            </div>
+          </div>
+
+          <div style="display:flex;align-items:center;gap:8px;background:#f8fafc;padding:8px 12px;border-radius:4px;font-size:12px;color:#334155;border:1px dashed #cbd5e1;margin-bottom:12px;">
+            <span>🔒 <strong>安全脱敏守护：</strong></span>
+            <span>流式经过 <code>redact_secrets</code> 彻底清除 API Key、私钥与密码，保证零凭证泄漏。</span>
+          </div>
+
+          <div id="mig-preview-box" class="hidden" style="background:#f1f5f9;border-radius:4px;padding:10px;font-size:12px;margin-bottom:12px;border-left:3px solid #6366f1;"></div>
+
+          <div style="display:flex;gap:10px;justify-content:flex-end;">
+            <button onclick="previewMigration('${sessionId}', '${sourceAgent}')" class="btn btn-outline btn-sm">👁️ 预览转译 AST</button>
+            <button onclick="executeMigration('${sessionId}', '${sourceAgent}')" class="btn btn-primary btn-sm" style="background:#4f46e5;border-color:#4338ca;">🚀 开始安全迁移</button>
+          </div>
+        </div>
+      `;
+      modal.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+
+    async function previewMigration(sessionId, sourceAgent) {
+      const targetAgent = document.getElementById('mig-target-agent').value;
+      const box = document.getElementById('mig-preview-box');
+      box.classList.remove('hidden');
+      box.innerHTML = '⏳ 正在解析源会话 AST 并执行模拟转译与凭据清洗...';
+      try {
+        const res = await fetch(API_BASE + '/api/sessions/preview-migration', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            session_id: sessionId,
+            source_agent: sourceAgent,
+            target_agent: targetAgent
+          })
+        });
+        const data = await res.json();
+        if (data.ok && data.preview) {
+          const p = data.preview;
+          box.innerHTML = `
+            <div style="font-weight:600;color:#312e81;margin-bottom:4px;">✓ 模拟 AST 转译成功：</div>
+            <div style="display:flex;gap:16px;color:#475569;">
+              <span>交互轮次：<strong>${p.turns_converted}</strong> 轮</span>
+              <span>工具调用：<strong>${p.tools_converted}</strong> 次</span>
+              <span>自动脱敏：<strong>${p.secrets_redacted_count}</strong> 项敏感词</span>
+              <span>工件产物：<strong>${p.artifacts_count}</strong> 份</span>
+            </div>
+          `;
+        } else {
+          box.innerHTML = '<span style="color:#b91c1c;">⚠️ 模拟转译提示：' + (data.detail || '未探测到源文件，可直接尝试执行迁移') + '</span>';
+        }
+      } catch (err) {
+        box.innerHTML = '<span style="color:#b91c1c;">⚠️ 无法连接本地预览服务：' + err.message + '</span>';
+      }
+    }
+
+    async function executeMigration(sessionId, sourceAgent) {
+      const targetAgent = document.getElementById('mig-target-agent').value;
+      const autoRemap = document.getElementById('mig-remap-paths').checked;
+      showBannerToast('⏳ 正在执行从 [' + sourceAgent.toUpperCase() + '] 到 [' + targetAgent.toUpperCase() + '] 的会话迁移并生成 SHA-256 事务备份...', false);
+      try {
+        const res = await fetch(API_BASE + '/api/sessions/migrate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            session_id: sessionId,
+            source_agent: sourceAgent,
+            target_agent: targetAgent,
+            auto_remap_paths: autoRemap
+          })
+        });
+        const data = await res.json();
+        if (data.ok && data.report) {
+          const r = data.report;
+          document.getElementById('session-migration-modal').classList.add('hidden');
+          if (data.bootstrap) renderAll(data.bootstrap);
+          showBannerToast('🎉 <strong>跨智能体会话迁移成功！</strong> 新会话 ID: <code>' + r.new_session_id + '</code> 已写入目标目录，转换 ' + r.turns_converted + ' 轮对话，并已完成 SHA-256 事务备份。', false);
+        } else {
+          throw new Error(data.detail || '迁移失败');
+        }
+      } catch (err) {
+        showBannerToast('❌ 会话迁移失败：' + err.message + '。可在终端执行：<code>ai-guard session migrate ' + sessionId + ' --source ' + sourceAgent + ' --target ' + targetAgent + '</code>', true);
       }
     }
 

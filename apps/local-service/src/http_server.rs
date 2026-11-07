@@ -682,6 +682,103 @@ fn route_api_request(
                 ),
             }
         }
+        ("POST", "/api/sessions/migrate") => {
+            #[derive(Deserialize)]
+            struct MigrateReq {
+                session_id: String,
+                source_agent: String,
+                target_agent: String,
+                source_path: Option<String>,
+                target_dir: Option<String>,
+                auto_remap_paths: Option<bool>,
+            }
+            let req: MigrateReq = match serde_json::from_slice(body) {
+                Ok(r) => r,
+                Err(e) => {
+                    return (
+                        400,
+                        json!({ "ok": false, "error_code": "AG-API-BAD-JSON", "detail": e.to_string() }),
+                    )
+                }
+            };
+
+            let bstore = crate::resolve_backup_store(cfg.backup_dir.as_deref());
+            let resolved_src = req
+                .source_path
+                .clone()
+                .or_else(|| crate::resolve_session_source_path(&req.source_agent, &req.session_id));
+            let resolved_tgt = req
+                .target_dir
+                .clone()
+                .or_else(|| crate::resolve_default_target_dir(&req.target_agent));
+
+            let mig_req = ai_guard_session::MigrationRequest {
+                session_id: req.session_id,
+                source_agent: req.source_agent,
+                target_agent: req.target_agent,
+                source_path: resolved_src,
+                target_dir: resolved_tgt,
+                auto_remap_paths: req.auto_remap_paths.unwrap_or(true),
+            };
+
+            match ai_guard_session::migrate_session(&mig_req, Some(&bstore)) {
+                Ok(rep) => (
+                    200,
+                    json!({
+                        "ok": true,
+                        "report": rep,
+                        "bootstrap": build_bootstrap_json(cfg),
+                    }),
+                ),
+                Err(e) => (
+                    400,
+                    json!({ "ok": false, "error_code": e.code(), "detail": e.to_string() }),
+                ),
+            }
+        }
+        ("POST", "/api/sessions/preview-migration") => {
+            #[derive(Deserialize)]
+            struct PreviewReq {
+                session_id: String,
+                source_agent: String,
+                target_agent: String,
+                source_path: Option<String>,
+            }
+            let req: PreviewReq = match serde_json::from_slice(body) {
+                Ok(r) => r,
+                Err(e) => {
+                    return (
+                        400,
+                        json!({ "ok": false, "error_code": "AG-API-BAD-JSON", "detail": e.to_string() }),
+                    )
+                }
+            };
+            let resolved_src = req
+                .source_path
+                .clone()
+                .or_else(|| crate::resolve_session_source_path(&req.source_agent, &req.session_id));
+            let temp_preview_dir =
+                std::env::temp_dir().join(format!("ai-guard-preview-mig-{}", std::process::id()));
+            let preview_mig_req = ai_guard_session::MigrationRequest {
+                session_id: req.session_id,
+                source_agent: req.source_agent,
+                target_agent: req.target_agent,
+                source_path: resolved_src,
+                target_dir: Some(temp_preview_dir.to_string_lossy().to_string()),
+                auto_remap_paths: true,
+            };
+            match ai_guard_session::migrate_session(&preview_mig_req, None) {
+                Ok(rep) => {
+                    let _ = std::fs::remove_file(&rep.output_path);
+                    let _ = std::fs::remove_dir_all(&temp_preview_dir);
+                    (200, json!({ "ok": true, "preview": rep }))
+                }
+                Err(e) => (
+                    400,
+                    json!({ "ok": false, "error_code": e.code(), "detail": e.to_string() }),
+                ),
+            }
+        }
         ("GET", "/api/sessions/detail") => {
             let tid = query
                 .get("target")

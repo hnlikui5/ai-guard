@@ -139,6 +139,25 @@ fn main() {
                 backup_dir.as_deref(),
                 json,
             ),
+            SessionSubcommands::Migrate {
+                id,
+                source,
+                target,
+                source_path,
+                target_dir,
+                auto_remap,
+                backup_dir,
+                json,
+            } => run_session_migrate(
+                &id,
+                &source,
+                &target,
+                source_path.as_deref(),
+                target_dir.as_deref(),
+                auto_remap,
+                backup_dir.as_deref(),
+                json,
+            ),
         },
         Commands::Rule { subcommand } => match subcommand {
             RuleSubcommands::Validate { path, json } => run_rule_validate(&path, json),
@@ -1506,6 +1525,265 @@ fn run_session_backup(
             std::process::exit(1);
         }
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_session_migrate(
+    id: &str,
+    source: &str,
+    target: &str,
+    source_path: Option<&str>,
+    target_dir: Option<&str>,
+    auto_remap: bool,
+    backup_dir: Option<&str>,
+    as_json: bool,
+) {
+    let backup_store = resolve_backup_store(backup_dir);
+
+    let resolved_src_path = source_path
+        .map(|s| s.to_string())
+        .or_else(|| resolve_session_source_path(source, id));
+
+    let resolved_tgt_dir = target_dir
+        .map(|s| s.to_string())
+        .or_else(|| resolve_default_target_dir(target));
+
+    let req = ai_guard_session::MigrationRequest {
+        session_id: id.to_string(),
+        source_agent: source.to_string(),
+        target_agent: target.to_string(),
+        source_path: resolved_src_path,
+        target_dir: resolved_tgt_dir,
+        auto_remap_paths: auto_remap,
+    };
+
+    match ai_guard_session::migrate_session(&req, Some(&backup_store)) {
+        Ok(rep) => {
+            if as_json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&rep).unwrap_or_else(|_| "{}".to_string())
+                );
+            } else {
+                println!(
+                    "OK: 会话 `{}` 从 [{}] 成功迁移至 [{}]！",
+                    rep.original_session_id,
+                    rep.source_agent.to_uppercase(),
+                    rep.target_agent.to_uppercase()
+                );
+                println!("  新会话 ID: {}", rep.new_session_id);
+                println!("  会话标题: {}", rep.title);
+                println!("  转换交互轮次: {}", rep.turns_converted);
+                println!("  转换工具调用: {}", rep.tools_converted);
+                println!("  安全脱敏敏感项: {}", rep.secrets_redacted_count);
+                println!("  生成目标路径: {}", rep.output_path);
+                if let Some(ref m) = rep.manifest {
+                    println!("  事务备份校验: SHA-256 清单 ID {}", m.backup_id);
+                }
+            }
+        }
+        Err(e) => {
+            if as_json {
+                let err_out = serde_json::json!({
+                    "ok": false,
+                    "error_code": e.code(),
+                    "detail": e.to_string(),
+                });
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&err_out).unwrap_or_else(|_| "{}".to_string())
+                );
+            } else {
+                eprintln!("ERROR [{}]: {e}", e.code());
+            }
+            std::process::exit(1);
+        }
+    }
+}
+
+pub fn resolve_session_source_path(agent: &str, session_id: &str) -> Option<String> {
+    match agent.to_lowercase().as_str() {
+        "codex" => {
+            let mut candidates = Vec::new();
+            if let Ok(home) = std::env::var("HOME") {
+                candidates.push(PathBuf::from(&home).join(".codex"));
+            }
+            #[cfg(target_os = "windows")]
+            if let Ok(userprofile) = std::env::var("USERPROFILE") {
+                candidates.push(PathBuf::from(&userprofile).join(".codex"));
+            }
+            for ch in candidates {
+                let sessions_dir = ch.join("sessions");
+                if sessions_dir.is_dir() {
+                    if let Some(found) = find_file_matching(&sessions_dir, session_id) {
+                        return Some(found.to_string_lossy().to_string());
+                    }
+                }
+            }
+            None
+        }
+        "agy" => {
+            let mut candidates = Vec::new();
+            if let Ok(home) = std::env::var("HOME") {
+                candidates.push(
+                    PathBuf::from(&home)
+                        .join(".gemini")
+                        .join("antigravity")
+                        .join("brain"),
+                );
+            }
+            #[cfg(target_os = "windows")]
+            if let Ok(userprofile) = std::env::var("USERPROFILE") {
+                candidates.push(
+                    PathBuf::from(&userprofile)
+                        .join(".gemini")
+                        .join("antigravity")
+                        .join("brain"),
+                );
+            }
+            for cb in candidates {
+                let s_dir = cb.join(session_id);
+                if s_dir.is_dir() {
+                    return Some(s_dir.to_string_lossy().to_string());
+                }
+                if let Ok(rd) = std::fs::read_dir(&cb) {
+                    for entry in rd.flatten() {
+                        let name = entry.file_name().to_string_lossy().to_string();
+                        if name.starts_with(session_id) && entry.path().is_dir() {
+                            return Some(entry.path().to_string_lossy().to_string());
+                        }
+                    }
+                }
+            }
+            None
+        }
+        "opencode" => {
+            let mut candidates = Vec::new();
+            if let Ok(home) = std::env::var("HOME") {
+                for sub in [
+                    ".config/opencode/sessions",
+                    ".local/share/opencode/sessions",
+                    ".opencode/sessions",
+                ] {
+                    candidates.push(PathBuf::from(&home).join(sub));
+                }
+            }
+            #[cfg(target_os = "windows")]
+            if let Ok(appdata) = std::env::var("APPDATA") {
+                candidates.push(PathBuf::from(&appdata).join("opencode").join("sessions"));
+            }
+            for cd in candidates {
+                let exact = cd.join(format!("{session_id}.json"));
+                if exact.is_file() {
+                    return Some(exact.to_string_lossy().to_string());
+                }
+                if let Ok(rd) = std::fs::read_dir(&cd) {
+                    for entry in rd.flatten() {
+                        let fname = entry.file_name().to_string_lossy().to_string();
+                        if fname.starts_with(session_id) && fname.ends_with(".json") {
+                            return Some(entry.path().to_string_lossy().to_string());
+                        }
+                    }
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+pub fn resolve_default_target_dir(agent: &str) -> Option<String> {
+    match agent.to_lowercase().as_str() {
+        "codex" => {
+            #[cfg(target_os = "windows")]
+            if let Ok(userprofile) = std::env::var("USERPROFILE") {
+                return Some(
+                    PathBuf::from(&userprofile)
+                        .join(".codex")
+                        .to_string_lossy()
+                        .to_string(),
+                );
+            }
+            if let Ok(home) = std::env::var("HOME") {
+                return Some(
+                    PathBuf::from(&home)
+                        .join(".codex")
+                        .to_string_lossy()
+                        .to_string(),
+                );
+            }
+            None
+        }
+        "agy" => {
+            #[cfg(target_os = "windows")]
+            if let Ok(userprofile) = std::env::var("USERPROFILE") {
+                return Some(
+                    PathBuf::from(&userprofile)
+                        .join(".gemini")
+                        .join("antigravity")
+                        .join("brain")
+                        .to_string_lossy()
+                        .to_string(),
+                );
+            }
+            if let Ok(home) = std::env::var("HOME") {
+                return Some(
+                    PathBuf::from(&home)
+                        .join(".gemini")
+                        .join("antigravity")
+                        .join("brain")
+                        .to_string_lossy()
+                        .to_string(),
+                );
+            }
+            None
+        }
+        "opencode" => {
+            #[cfg(target_os = "windows")]
+            if let Ok(appdata) = std::env::var("APPDATA") {
+                return Some(
+                    PathBuf::from(&appdata)
+                        .join("opencode")
+                        .join("sessions")
+                        .to_string_lossy()
+                        .to_string(),
+                );
+            }
+            if let Ok(home) = std::env::var("HOME") {
+                return Some(
+                    PathBuf::from(&home)
+                        .join(".opencode")
+                        .join("sessions")
+                        .to_string_lossy()
+                        .to_string(),
+                );
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+fn find_file_matching(root: &Path, pattern: &str) -> Option<PathBuf> {
+    if !root.is_dir() {
+        return None;
+    }
+    if let Ok(entries) = std::fs::read_dir(root) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                if let Some(found) = find_file_matching(&p, pattern) {
+                    return Some(found);
+                }
+            } else if p.is_file() {
+                let name = p.file_name().unwrap_or_default().to_string_lossy();
+                if name.contains(pattern) {
+                    return Some(p);
+                }
+            }
+        }
+    }
+    None
 }
 
 fn discover_windows_host_codex_home() -> Option<PathBuf> {

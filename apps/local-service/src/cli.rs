@@ -321,6 +321,40 @@ pub enum SessionSubcommands {
         #[arg(long)]
         json: bool,
     },
+
+    /// 跨智能体（Codex、AGY、OpenCode）安全迁移会话（标准化 AST 转译 + 凭证二次脱敏 + SHA-256 事务保障）
+    Migrate {
+        /// 会话 ID（支持完整 ID 或前缀匹配）
+        id: String,
+
+        /// 源智能体类型：codex | agy | opencode
+        #[arg(long)]
+        source: String,
+
+        /// 目标智能体类型：codex | agy | opencode
+        #[arg(long)]
+        target: String,
+
+        /// 显式指定源文件或目录路径（可选，未指定时自动探测）
+        #[arg(long)]
+        source_path: Option<String>,
+
+        /// 目标输出目录（可选，未指定时输出至默认环境目录）
+        #[arg(long)]
+        target_dir: Option<String>,
+
+        /// 自动进行 Windows ⇄ WSL2 路径重映射
+        #[arg(long, default_value_t = true)]
+        auto_remap: bool,
+
+        /// 显式指定备份仓库根目录（可选）
+        #[arg(long)]
+        backup_dir: Option<String>,
+
+        /// 以 JSON 格式输出迁移报告
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]

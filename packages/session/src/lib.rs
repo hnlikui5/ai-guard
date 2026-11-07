@@ -17,6 +17,15 @@ use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
+pub mod migration;
+
+pub use migration::{
+    export_ast_to_agy, export_ast_to_codex, export_ast_to_opencode, migrate_session,
+    parse_agy_transcript_content, parse_codex_rollout_content, parse_opencode_session_content,
+    remap_path_str, MigrationReport, MigrationRequest, SessionArtifact, SessionAst, SessionTurn,
+    ToolCallAst,
+};
+
 #[derive(Debug, Error)]
 pub enum SessionError {
     #[error("[AG-SESSION-IO] 读取会话文件失败 ({path}): {detail}")]
@@ -30,6 +39,12 @@ pub enum SessionError {
 
     #[error("[AG-SESSION-BACKUP] 会话备份失败: {0}")]
     Backup(#[from] BackupError),
+
+    #[error("[AG-SESSION-MIGRATION] 会话迁移失败: {detail}")]
+    Migration { detail: String },
+
+    #[error("[AG-SESSION-PARSE] 会话格式解析失败 ({format}): {detail}")]
+    Parse { format: String, detail: String },
 }
 
 impl SessionError {
@@ -38,6 +53,8 @@ impl SessionError {
             Self::Io { .. } => "AG-SESSION-IO",
             Self::NotFound { .. } => "AG-SESSION-NOT-FOUND",
             Self::Backup(b) => b.code(),
+            Self::Migration { .. } => "AG-SESSION-MIGRATION",
+            Self::Parse { .. } => "AG-SESSION-PARSE",
         }
     }
 }
