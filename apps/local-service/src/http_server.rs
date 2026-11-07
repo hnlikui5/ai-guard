@@ -26,7 +26,7 @@ use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone)]
 pub struct ServeConfig {
@@ -37,7 +37,7 @@ pub struct ServeConfig {
     pub policy_path: Option<String>,
 }
 
-/// 启动本地回路 HTTP JSON 服务（阻塞运行；供 `ai-guard serve` 调用）。
+/// 启动本地回路 HTTP JSON 服务（多线程并发处理浏览器请求 + 3s 空闲读超时保护，防止浏览器预连接阻塞）。
 pub fn run_http_server(
     cfg: &ServeConfig,
     max_requests_for_test: Option<usize>,
@@ -52,7 +52,16 @@ pub fn run_http_server(
 
     for (handled, stream_res) in listener.incoming().enumerate() {
         if let Ok(mut stream) = stream_res {
-            let _ = handle_connection(&mut stream, cfg);
+            let _ = stream.set_read_timeout(Some(Duration::from_secs(3)));
+            let _ = stream.set_write_timeout(Some(Duration::from_secs(3)));
+            if max_requests_for_test.is_some() {
+                let _ = handle_connection(&mut stream, cfg);
+            } else {
+                let cfg_clone = cfg.clone();
+                std::thread::spawn(move || {
+                    let _ = handle_connection(&mut stream, &cfg_clone);
+                });
+            }
         }
         if let Some(limit) = max_requests_for_test {
             if handled + 1 >= limit {
