@@ -293,9 +293,13 @@ fn discover_rollout_files(sessions_dir: &Path) -> HashMap<String, PathBuf> {
                 stack.push(path);
             } else if path.extension().and_then(|s| s.to_str()) == Some("jsonl") {
                 if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                    // rollout-YYYY-MM-DDTHH-MM-SS-<uuid>
+                    // 兼容标准 Codex rollout-YYYY-MM-DDTHH-MM-SS-<uuid> 格式
                     if let Some(uuid_part) = extract_uuid_suffix(stem) {
-                        map.insert(uuid_part, path);
+                        map.insert(uuid_part, path.clone());
+                    }
+                    // 兼容迁移生成的 rollout-<session_id>.jsonl
+                    if let Some(rest) = stem.strip_prefix("rollout-") {
+                        map.insert(rest.to_string(), path);
                     }
                 }
             }
