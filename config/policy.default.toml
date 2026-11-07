@@ -1,0 +1,91 @@
+# AI卫士（AI Guard）V0.1 默认跨平台安全策略配置
+# 宿主机主控位置：%LOCALAPPDATA%\ai-guard\policy.toml
+# WSL2 镜像位置：~/.config/ai-guard/policy.toml
+
+schema_version = 1
+revision = "v0.1-default-r1"
+mode = "protect"
+
+[[rules]]
+id = "TEST-DENY-001"
+enabled = true
+priority = 10
+name = "确定性自检与 E2E 测试阻断规则"
+agent = "*"
+tool = "*"
+os_scope = "all"
+match_kind = "builtin_detector"
+match_value = "TEST-DENY-001"
+effect = "deny"
+reason_code = "AG-RULE-TEST-DENY-001"
+message = "命中确定性阻断规则 TEST-DENY-001：检测到禁止执行的标记指令 AI_GUARD_BLOCK_ME"
+
+[[rules]]
+id = "SHELL-DISK-WIPE"
+enabled = true
+priority = 20
+name = "跨平台磁盘格式化与块设备擦除阻断"
+agent = "*"
+tool = "Bash"
+os_scope = "all"
+match_kind = "builtin_detector"
+match_value = "SHELL-DISK-WIPE"
+effect = "deny"
+reason_code = "AG-RULE-DISK-WIPE"
+message = "禁止执行磁盘格式化、分区表破坏或底层块设备擦除命令（mkfs/fdisk/dd/Format-Volume/Clear-Disk/diskpart）"
+
+[[rules]]
+id = "SHELL-DESTRUCTIVE-RM"
+enabled = true
+priority = 30
+name = "跨平台高危目录递归强制删除阻断"
+agent = "*"
+tool = "Bash"
+os_scope = "all"
+match_kind = "builtin_detector"
+match_value = "SHELL-DESTRUCTIVE-RM"
+effect = "deny"
+reason_code = "AG-RULE-DESTRUCTIVE-RM"
+message = "禁止对根目录、用户主目录、上级目录或系统关键路径执行递归强制删除（rm -rf / Remove-Item -Recurse / rmdir /s）"
+
+[[rules]]
+id = "SHELL-PIPE-EXEC"
+enabled = true
+priority = 40
+name = "跨平台远程脚本下载/解码即执行阻断"
+agent = "*"
+tool = "Bash"
+os_scope = "all"
+match_kind = "builtin_detector"
+match_value = "SHELL-PIPE-EXEC"
+effect = "deny"
+reason_code = "AG-RULE-PIPE-EXEC"
+message = "禁止将远程下载或 Base64 解码内容直接通过管道交由解释器执行（curl|sh / iwr|iex / powershell -enc / certutil）"
+
+[[rules]]
+id = "PATH-SENSITIVE-CRED"
+enabled = true
+priority = 50
+name = "跨平台敏感凭据文件访问与工作区路径穿越阻断"
+agent = "*"
+tool = "*"
+os_scope = "all"
+match_kind = "builtin_detector"
+match_value = "PATH-SENSITIVE-CRED"
+effect = "deny"
+reason_code = "AG-RULE-SENSITIVE-PATH"
+message = "禁止读取或修改敏感凭据路径（.ssh/.aws/.gnupg/.codex/auth.json/.env/*.pem/*.key）或跨越工作区根目录进行路径穿越"
+
+[[rules]]
+id = "GIT-DANGEROUS-OP"
+enabled = true
+priority = 60
+name = "高危不可逆 Git 操作阻断"
+agent = "*"
+tool = "Bash"
+os_scope = "all"
+match_kind = "builtin_detector"
+match_value = "GIT-DANGEROUS-OP"
+effect = "deny"
+reason_code = "AG-RULE-GIT-DANGEROUS"
+message = "禁止执行可能导致未提交代码丢失或远端历史覆写的高危 Git 命令（git reset --hard / git clean -fdx / git push --force）"

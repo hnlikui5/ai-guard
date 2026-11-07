@@ -1,35 +1,49 @@
 mod cli;
 
 use ai_guard_agent_adapters::{
-    extract_apply_patch_paths, handle_codex_pre_tool_use_bytes, CodexPreToolUseWireOutput,
-    MAX_HOOK_STDIN_BYTES,
+    extract_apply_patch_paths, handle_codex_pre_tool_use_bytes_with_engine,
+    parse_codex_pre_tool_use_bytes, CodexPreToolUseWireOutput, MAX_HOOK_STDIN_BYTES,
 };
 use ai_guard_security::{
-    evaluate_action_event, redact_secrets, ActionEvent, ActionKind, ClientSurface, Decision,
-    EnvironmentKind,
+    default_policy_engine, redact_secrets, ActionEvent, ActionKind, ClientSurface, Decision,
+    EnvironmentKind, PolicyEngine, SecurityError,
 };
 use clap::Parser;
 use cli::{Cli, CodexHookEvents, Commands, HookAgents, RuleSubcommands};
 use serde::Serialize;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 fn main() {
     let cli = Cli::parse();
     match cli.command {
         Commands::Doctor { target, json } => run_doctor(&target, json),
         Commands::Rule { subcommand } => match subcommand {
+            RuleSubcommands::Validate { path, json } => run_rule_validate(&path, json),
             RuleSubcommands::Test {
                 agent,
                 tool,
                 input,
                 cwd,
+                event_file,
+                policy,
                 json,
-            } => run_rule_test(&agent, &tool, &input, &cwd, json),
+            } => run_rule_test(
+                &agent,
+                tool.as_deref(),
+                input.as_deref(),
+                &cwd,
+                event_file.as_deref(),
+                policy.as_deref(),
+                json,
+            ),
         },
         Commands::Hook { agent } => match agent {
             HookAgents::Codex { event } => match event {
-                CodexHookEvents::PreToolUse => run_codex_pre_tool_use_hook(),
+                CodexHookEvents::PreToolUse { policy } => {
+                    run_codex_pre_tool_use_hook(policy.as_deref())
+                }
             },
         },
     }
@@ -212,62 +226,257 @@ fn inspect_codex_target(
     }
 }
 
-fn run_rule_test(agent: &str, tool: &str, input: &str, cwd: &str, as_json: bool) {
-    let env_kind = EnvironmentKind::infer_from_path(cwd);
-    let target_id = env_kind.default_target_id();
-    let action_kind = match tool {
-        "Bash" | "exec_command" | "shell" => ActionKind::Shell,
-        "apply_patch" => ActionKind::FilePatch,
-        t if t.starts_with("mcp__") => ActionKind::McpTool,
-        _ => ActionKind::Unknown,
-    };
+#[derive(Debug, Serialize)]
+struct RuleValidateReport {
+    valid: bool,
+    path: String,
+    policy_revision: Option<String>,
+    rules_total: usize,
+    rules_enabled: usize,
+    error_code: Option<String>,
+    error_detail: Option<String>,
+}
 
-    let target_paths = if action_kind == ActionKind::FilePatch {
-        extract_apply_patch_paths(input)
-    } else {
-        Vec::new()
-    };
-
-    let event = ActionEvent {
-        target_id,
-        environment_kind: env_kind,
-        client_surface: ClientSurface::CodexCli,
-        agent: agent.to_string(),
-        session_id: "rule-test-session".to_string(),
-        turn_id: "rule-test-turn".to_string(),
-        tool_use_id: "rule-test-call".to_string(),
-        tool_name: tool.to_string(),
-        action_kind,
-        cwd: cwd.to_string(),
-        normalized_command: Some(input.to_string()),
-        target_paths,
-        redacted_summary: redact_secrets(input),
-    };
-
-    let decision = evaluate_action_event(&event);
-    if as_json {
-        #[derive(Serialize)]
-        struct RuleTestOutput {
-            event: ActionEvent,
-            decision: Decision,
+fn run_rule_validate(path_str: &str, as_json: bool) {
+    let path = Path::new(path_str);
+    match PolicyEngine::from_toml_path(path) {
+        Ok(engine) => {
+            let cfg = engine.config();
+            let enabled_count = cfg.rules.iter().filter(|r| r.enabled).count();
+            let report = RuleValidateReport {
+                valid: true,
+                path: path_str.to_string(),
+                policy_revision: Some(engine.policy_revision().to_string()),
+                rules_total: cfg.rules.len(),
+                rules_enabled: enabled_count,
+                error_code: None,
+                error_detail: None,
+            };
+            if as_json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".to_string())
+                );
+            } else {
+                println!(
+                    "OK: policy `{}` is valid (revision={}, rules_total={}, rules_enabled={})",
+                    report.path,
+                    engine.policy_revision(),
+                    report.rules_total,
+                    report.rules_enabled
+                );
+            }
         }
-        let out = RuleTestOutput { event, decision };
+        Err(err) => {
+            let (code, detail) = extract_security_error_fields(&err);
+            let report = RuleValidateReport {
+                valid: false,
+                path: path_str.to_string(),
+                policy_revision: None,
+                rules_total: 0,
+                rules_enabled: 0,
+                error_code: Some(code.clone()),
+                error_detail: Some(detail.clone()),
+            };
+            if as_json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".to_string())
+                );
+            } else {
+                eprintln!(
+                    "ERROR [{}]: policy `{}` validation failed: {}",
+                    code, report.path, detail
+                );
+            }
+            std::process::exit(1);
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct RuleTestOutput {
+    event: ActionEvent,
+    decision: Decision,
+    policy_revision: String,
+    used_snapshot_fallback: bool,
+    policy_warning: Option<String>,
+    duration_us: u128,
+}
+
+fn run_rule_test(
+    agent: &str,
+    tool: Option<&str>,
+    input: Option<&str>,
+    cwd: &str,
+    event_file: Option<&str>,
+    policy_path: Option<&str>,
+    as_json: bool,
+) {
+    let start = Instant::now();
+
+    let event = if let Some(file_path) = event_file {
+        let bytes = match std::fs::read(file_path) {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("读取事件文件 `{file_path}` 失败: {e}");
+                std::process::exit(1);
+            }
+        };
+        match parse_codex_pre_tool_use_bytes(&bytes) {
+            Ok(ev) => ev,
+            Err(err) => {
+                let (code, detail) = extract_security_error_fields(&err);
+                let decision = Decision::fail_closed_deny("unknown", code, detail);
+                let duration_us = start.elapsed().as_micros();
+                let fallback_ev = ActionEvent {
+                    target_id: "unknown".to_string(),
+                    environment_kind: EnvironmentKind::infer_from_path(cwd),
+                    client_surface: ClientSurface::CodexCli,
+                    agent: agent.to_string(),
+                    session_id: "invalid-event".to_string(),
+                    turn_id: "invalid-turn".to_string(),
+                    tool_use_id: "invalid-call".to_string(),
+                    tool_name: "unknown".to_string(),
+                    action_kind: ActionKind::Unknown,
+                    cwd: cwd.to_string(),
+                    normalized_command: None,
+                    target_paths: Vec::new(),
+                    redacted_summary: "[INVALID_EVENT_PAYLOAD]".to_string(),
+                };
+                print_rule_test_result(
+                    fallback_ev,
+                    decision,
+                    "protocol-fail-closed".to_string(),
+                    false,
+                    None,
+                    duration_us,
+                    as_json,
+                );
+                return;
+            }
+        }
+    } else {
+        let tool_name = tool.unwrap_or("Bash");
+        let raw_input = input.unwrap_or("");
+        let env_kind = EnvironmentKind::infer_from_path(cwd);
+        let target_id = env_kind.default_target_id();
+        let action_kind = match tool_name {
+            "Bash" | "exec_command" | "shell" => ActionKind::Shell,
+            "apply_patch" => ActionKind::FilePatch,
+            t if t.starts_with("mcp__") => ActionKind::McpTool,
+            _ => ActionKind::Unknown,
+        };
+
+        let target_paths = if action_kind == ActionKind::FilePatch {
+            extract_apply_patch_paths(raw_input)
+        } else {
+            Vec::new()
+        };
+
+        ActionEvent {
+            target_id,
+            environment_kind: env_kind,
+            client_surface: ClientSurface::CodexCli,
+            agent: agent.to_string(),
+            session_id: "rule-test-session".to_string(),
+            turn_id: "rule-test-turn".to_string(),
+            tool_use_id: "rule-test-call".to_string(),
+            tool_name: tool_name.to_string(),
+            action_kind,
+            cwd: cwd.to_string(),
+            normalized_command: Some(raw_input.to_string()),
+            target_paths,
+            redacted_summary: redact_secrets(raw_input),
+        }
+    };
+
+    let (decision, policy_revision, used_fallback, warning) = if let Some(p) = policy_path {
+        match PolicyEngine::load_with_snapshot_fallback(Path::new(p), None) {
+            Ok((engine, warn)) => {
+                let d = engine.evaluate(&event);
+                (
+                    d,
+                    engine.policy_revision().to_string(),
+                    warn.is_some(),
+                    warn,
+                )
+            }
+            Err(err) => {
+                let (code, detail) = extract_security_error_fields(&err);
+                let d = Decision::fail_closed_deny(&event.target_id, code, detail);
+                (d, "policy-error-fail-closed".to_string(), false, None)
+            }
+        }
+    } else {
+        let engine = default_policy_engine();
+        let d = engine.evaluate(&event);
+        (d, engine.policy_revision().to_string(), false, None)
+    };
+
+    let duration_us = start.elapsed().as_micros();
+    print_rule_test_result(
+        event,
+        decision,
+        policy_revision,
+        used_fallback,
+        warning,
+        duration_us,
+        as_json,
+    );
+}
+
+fn print_rule_test_result(
+    event: ActionEvent,
+    decision: Decision,
+    policy_revision: String,
+    used_snapshot_fallback: bool,
+    policy_warning: Option<String>,
+    duration_us: u128,
+    as_json: bool,
+) {
+    if as_json {
+        let out = RuleTestOutput {
+            event,
+            decision,
+            policy_revision,
+            used_snapshot_fallback,
+            policy_warning,
+            duration_us,
+        };
         println!(
             "{}",
             serde_json::to_string_pretty(&out).unwrap_or_else(|_| "{}".to_string())
         );
     } else {
         println!(
-            "Decision: {:?} | Reason: {} | Message: {}",
-            decision.enforcement, decision.reason_code, decision.display_message
+            "Decision: {:?} | Reason: {} | Rules: {:?} | Latency: {}us | Message: {}",
+            decision.enforcement,
+            decision.reason_code,
+            decision.matched_rule_ids,
+            duration_us,
+            decision.display_message
         );
+    }
+}
+
+fn extract_security_error_fields(err: &SecurityError) -> (String, String) {
+    match err {
+        SecurityError::ProtocolError {
+            code,
+            redacted_detail,
+        }
+        | SecurityError::EvaluationError {
+            code,
+            redacted_detail,
+        } => (code.clone(), redacted_detail.clone()),
     }
 }
 
 /// Codex `PreToolUse` 极速热路径：
 /// - 注册顶层 panic hook：即便发生未预期 panic，也保证向 `stdout` 输出合法的单行 Deny JSON（Fail-Closed）。
 /// - 严格分离 `stdout`（仅输出协议 JSON）与 `stderr`（仅输出脱敏后的诊断摘要）。
-fn run_codex_pre_tool_use_hook() {
+fn run_codex_pre_tool_use_hook(policy_arg: Option<&str>) {
     std::panic::set_hook(Box::new(|_| {
         let fallback = CodexPreToolUseWireOutput::deny(
             "[AI卫士安全阻断] Hook 内部发生未预期异常，触发默认阻断保护（Fail-Closed）",
@@ -307,7 +516,31 @@ fn run_codex_pre_tool_use_hook() {
         return;
     }
 
-    let (decision, stdout_json) = handle_codex_pre_tool_use_bytes(&buf);
+    let env_policy = std::env::var("AI_GUARD_POLICY_PATH").ok();
+    let effective_policy_path = policy_arg.or(env_policy.as_deref());
+
+    let (decision, stdout_json) = if let Some(path_str) = effective_policy_path {
+        let snapshot_env = std::env::var("AI_GUARD_POLICY_SNAPSHOT_PATH").ok();
+        let snapshot_path = snapshot_env.as_deref().map(Path::new);
+        match PolicyEngine::load_with_snapshot_fallback(Path::new(path_str), snapshot_path) {
+            Ok((engine, warn)) => {
+                if let Some(w) = warn {
+                    let _ = writeln!(io::stderr(), "[ai-guard] WARN: {w}");
+                }
+                handle_codex_pre_tool_use_bytes_with_engine(&buf, &engine)
+            }
+            Err(err) => {
+                let (code, detail) = extract_security_error_fields(&err);
+                let d = Decision::fail_closed_deny("unknown", code, detail);
+                let line =
+                    CodexPreToolUseWireOutput::deny(&d.display_message).to_single_line_json();
+                (d, Some(line))
+            }
+        }
+    } else {
+        handle_codex_pre_tool_use_bytes_with_engine(&buf, default_policy_engine())
+    };
+
     if let Some(line) = stdout_json {
         let _ = writeln!(io::stdout(), "{line}");
         let _ = io::stdout().flush();

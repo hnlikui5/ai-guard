@@ -7,8 +7,8 @@
 //!   直接生成显式 Fail-Closed `Deny` 决策并序列化为合法的单行 Codex `PreToolUse` JSON。
 
 use ai_guard_security::{
-    evaluate_action_event, redact_secrets, ActionEvent, ActionKind, ClientSurface, Decision,
-    Enforcement, EnvironmentKind, SecurityError,
+    default_policy_engine, redact_secrets, ActionEvent, ActionKind, ClientSurface, Decision,
+    Enforcement, EnvironmentKind, PolicyEngine, SecurityError,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -307,13 +307,21 @@ pub fn extract_apply_patch_paths(patch_text: &str) -> Vec<String> {
     paths
 }
 
-/// 端到端处理一次 Codex `PreToolUse` Hook 调用：
+/// 端到端处理一次 Codex `PreToolUse` Hook 调用（使用默认内置策略引擎）：
 /// - 返回 `(Decision, Option<String>)`，其中 `Option<String>` 为需要写往 `stdout` 的单行 JSON（Allow 时为 `None`）。
 /// - 发生任何协议解析错误时，自动执行 Fail-Closed 返回显式 `Deny` 决策与合法的 Codex 拒绝 JSON。
 pub fn handle_codex_pre_tool_use_bytes(bytes: &[u8]) -> (Decision, Option<String>) {
+    handle_codex_pre_tool_use_bytes_with_engine(bytes, default_policy_engine())
+}
+
+/// 使用指定 `PolicyEngine` 端到端处理一次 Codex `PreToolUse` Hook 调用。
+pub fn handle_codex_pre_tool_use_bytes_with_engine(
+    bytes: &[u8],
+    engine: &PolicyEngine,
+) -> (Decision, Option<String>) {
     match parse_codex_pre_tool_use_bytes(bytes) {
         Ok(event) => {
-            let decision = evaluate_action_event(&event);
+            let decision = engine.evaluate(&event);
             let stdout_line = match decision.enforcement {
                 Enforcement::Deny => Some(
                     CodexPreToolUseWireOutput::deny(&decision.display_message)
