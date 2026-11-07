@@ -45,6 +45,14 @@
 - [x] 支持 Windows 系统托盘常驻运行、管家式紧凑应用窗口（980x640）、条件框吸顶固定与数据区域独立滚动、静默无黑窗口启动
 - [x] 完成宿主机独立运行与 WSL2 联动全量验收（`AT-01` ～ `AT-12` 与 `SEC-E2E-001` ～ `SEC-E2E-012`）及 V0.1 NSIS 安装包打包发布
 
+### 1.7 Phase 5.5：Antigravity（AGY）与 agy CLI 全链路原生 Hook 管控
+- [x] 输出《AGY 原生 Hook 协议真实契约规范》（`docs/AGY_HOOK_CONTRACT.md`）并在 PRD 与系统架构中确立技术方案
+- [ ] 在 `packages/agent-adapters` 实现 `AgyHookAdapter`，完成 ProtoJSON 解析、四大工具（`run_command`、`write_file`、`edit_file`、`call_mcp_tool`）归一化映射与 Fail-Closed 默认阻断
+- [ ] 在 `apps/local-service` 增加 `ai-guard hook agy pre-tool-use` 执行入口与 `ai-guard install agy` 事务安装/无损卸载
+- [ ] 在 `packages/session` 与 `packages/backup` 实现 AGY 转录流（`transcript.jsonl`）与 `brain/` 工件只读索引与 SHA-256 安全备份
+- [ ] 升级宿主机主控界面（`apps/desktop`），交付 Codex 与 AGY 双 Agent 并行治理看板与多源审计检索
+- [ ] 开展 AGY 离线与端到端拦截测试（涵盖放行、高危命令拦截与异常阻断）
+
 ---
 
 ## 阶段二：Phase 6A（V0.2 ~ V0.3）多 Agent 扩展与 OS 内核级沙箱

@@ -1,11 +1,11 @@
-# AI卫士（AI Guard）产品需求文档与分阶段研发 PRD（优化定稿版）
+# AI卫士（AI Guard）产品需求文档与分阶段研发 PRD（双 Agent 统一管控定稿版）
 
 - **文档编号**：`AG-PRD-V0.1`
-- **版本**：`V0.1-Host-Centric`（Windows 宿主机主控 + 宿主机/WSL2 双环境 Codex 统一纳管定稿版）
+- **版本**：`V0.1-DualAgent`（Windows 宿主机主控 + 宿主机/WSL2 Codex 与 Antigravity / `agy` CLI 统一纳管定稿版）
 - **日期**：2026-11-07
 - **文档状态**：已确认基线（研发与阶段验收唯一依据）
 - **代码仓库**：`https://github.com/hnlikui5/ai-guard.git`
-- **产品运行形态**：**Windows 宿主机原生桌面应用（主控中心）**，同时纳管 **Windows 宿主机下 Codex（桌面版/CLI）** 与 **WSL2 子系统下 Codex（CLI/Daemon）**
+- **产品运行形态**：**Windows 宿主机原生桌面应用（主控中心）**，同时纳管 **Codex（桌面版/CLI，Windows 宿主机与 WSL2）** 与 **Antigravity（AGY 桌面版 / `agy` CLI，Windows 宿主机与 WSL2）**
 - **主力技术栈**：Rust（跨平台同源编译 Windows `.exe` 与 WSL2 Linux 探针）+ SQLite（宿主机统一主库 + WSL2 缓冲同步）+ Tauri 2 / React / TypeScript（宿主机中文桌面端）
 - **开源许可证**：Apache License 2.0（个人版）
 
@@ -15,24 +15,24 @@
 
 ### 1.1 一句话产品定义
 
-**AI卫士（AI Guard）** 是一款运行在 **Windows 宿主机** 上的 AI 编程 Agent 本地安全防护与运行治理桌面软件，能够**同时发现、保护和管理“宿主机本机 Codex（桌面应用/CLI）”与“WSL2 子系统内 Codex”**，在各自执行节点就地阻断高危操作、在宿主机桌面端统一呈现防护状态与脱敏审计，并提供跨环境的会话（Session）只读索引与安全备份能力。
+**AI卫士（AI Guard）** 是一款运行在 **Windows 宿主机** 上的 AI 编程 Agent 本地安全防护与运行治理桌面软件，能够**同时发现、保护和管理“宿主机与 WSL2 双环境下的 Codex（桌面应用/CLI）”与“Antigravity（AGY 桌面版 / `agy` CLI）”**，在各自执行节点就地阻断高危操作、在宿主机桌面端统一呈现防护状态与脱敏审计，并提供跨 Agent 与跨环境的会话（Session）只读索引与安全备份能力。
 
-### 1.2 相较初始方案包的 7 项关键重构与优化（已纳入本 PRD）
+### 1.2 相较初始方案包的关键重构与优化（已纳入本 PRD）
 
 1. **架构视角纠正：从“WSL2 中心化”重构为“Windows 宿主机中心化主控 + 双环境纳管”**：
    - 修正原方案将主库与主服务放在 WSL2 内的主次颠倒假设。明确 **AI卫士最终是运行在 Windows 宿主机上的桌面软件**，全局策略真源（`policy.toml`）、统一审计库（`events.db`）和备份中心均位于 Windows 宿主机（`%LOCALAPPDATA%\ai-guard\`）。
    - 宿主机主程序向下统一纳管两类环境：**宿主机原生环境（如 `C:\Users\kui.li\.codex`，含 Codex 桌面版与 750MB+ 会话库）** 与 **WSL2 子系统环境（如 `/home/ai-li/.codex`，含 WSL2 `codex-cli`）**。即使未开启 WSL2，宿主机防护与管理功能依然完整可用。
 2. **“控制面集中管理、数据面（Hook 拦截）就地极速执行”机制**：
-   - 同一套 Rust 核心代码编译出宿主机 `ai-guard.exe` 与 WSL2 探针 `ai-guard-linux`：宿主机 Codex 直接触发 `ai-guard.exe hook`；WSL2 Codex 触发由宿主机自动分发到 WSL2 内的 `ai-guard-linux hook`（读取宿主机下发的策略镜像），避免每次工具调用跨 Windows/WSL2 虚拟机拉起进程的高延迟，再由宿主机主控增量拉取归并 WSL2 审计事件。
+   - 同一套 Rust 核心代码编译出宿主机 `ai-guard.exe` 与 WSL2 探针 `ai-guard-linux`：宿主机 Codex / AGY 直接触发 `ai-guard.exe hook`；WSL2 Codex / AGY 触发由宿主机自动分发到 WSL2 内的 `ai-guard-linux hook`（读取宿主机下发的策略镜像），避免每次工具调用跨 Windows/WSL2 虚拟机拉起进程的高延迟，再由宿主机主控增量拉取归并 WSL2 审计事件。
 3. **对齐本机宿主机 Codex（`0.166.0`）与 WSL2 Codex（`0.160.1`）真实运行架构**：
    - 实测本机宿主机已安装 Codex 桌面版（`C:\Users\kui.li\.codex`，含 `codex.exe` 与 `codex-command-runner-0.166.0-alpha.5.1.exe`），WSL2 内已安装 `codex-cli 0.160.1`（`hooks`、`daemon_auto_start`、`unified_exec` 均为 `stable=true`）。
    - 本 PRD 将 **宿主机与 WSL2 双环境的 Hook 配置结构、Daemon 刷新验证及跨平台工具名映射** 纳入 Phase 0/1 强制验收项。
 4. **明确“安全主线优先 + Backup 前置 + M1 Session 双环境汇入”排期策略**：
    - V0.1 坚持以 **“真实执行前拦截闭环（Hook Allow/Deny + 零副作用证明）”** 为第一优先级。
-   - `packages/backup` 在 **Phase 3** 即投入使用（承担宿主机与 WSL2 Codex 配置文件、策略文件的事务备份、SHA-256 校验与原子回滚）。
+   - `packages/backup` 在 **Phase 3** 即投入使用（承担宿主机与 WSL2 Codex / AGY 配置文件、策略文件的事务备份、SHA-256 校验与原子回滚）。
    - 原 M1 阶段的 Codex Session 管理成果在 **Phase 4B** 对齐迁入 `packages/session`，支持在宿主机界面上统一只读浏览和备份 **宿主机 `C:\Users\<User>\.codex` 与 WSL2 `~/.codex`** 的会话数据。
 5. **扩展跨平台 Hook 事件、Shell 语法与路径覆盖模型**：
-   - 适配层完整建模 Codex 四大标准 Hook 事件（`PreToolUse`、`PermissionRequest`、`UserPromptSubmit`、`PostToolUse`）。
+   - 适配层完整建模 Codex 四大标准 Hook 事件（`PreToolUse`、`PermissionRequest`、`UserPromptSubmit`、`PostToolUse`）与 Antigravity 原生 `PreToolUse` Hook。
    - 规则引擎同时覆盖 **Linux Shell（`bash`/`sh`）** 与 **Windows Shell（`powershell`/`pwsh`/`cmd`）** 的高危命令语法及 Windows/POSIX 敏感路径。
 6. **解决无常驻 Daemon 模式下 SQLite 并发锁与 Hook 超时矛盾**：
    - 单次 Hook 进程内策略裁决与审计落盘解耦：SQLite 开启 `WAL` 模式且设置 `busy_timeout = 15ms`；若遇锁竞争或 I/O 异常，**优先在 50ms 内向 `stdout` 返回 `Deny/Allow` 协议 JSON**，未落盘事件自动写入本地无锁 `events-fallback.jsonl` 并在后续查询时归并，杜绝因写库阻塞引发 Hook 超时放行（Fail-Open）。
@@ -52,6 +52,24 @@
      - **核心代码跨平台同源编译**：`apps/local-service` 与 `packages/*` 从 Phase 1 起禁用 Linux 专属硬编码，通过 `#![cfg(unix)]` / `#![cfg(windows)]` 隔离文件权限与原子重命名差异，使同一套 Rust 代码既可编译为 WSL2 Linux 二进制 `ai-guard`，也可编译为 Windows 原生二进制 `ai-guard.exe`（避免 Windows 原生 Hook 每次跨 `wsl.exe` 调用的冷启动延迟与引号丢失问题）。
      - **多执行目标模型（`ExecutionTarget` & `ClientSurface`）**：在领域模型中显式区分 `ClientSurface`（`CodexCli` / `CodexDesktop` / `CodexAppServer`）与 `ExecutionTarget`（`Wsl2Distro` / `WindowsNative`）。
      - **跨 Shell 与跨路径规则覆盖**：`packages/security` 同步支持 POSIX Shell（`bash`/`sh`）与 Windows Shell（`PowerShell`/`CMD`）的高危命令模式（如 `Remove-Item -Recurse -Force`、`iwr ... | iex`、`powershell -enc`）及 Windows 敏感路径（`%USERPROFILE%\.ssh`、`C:\Users\*\...`）归一化检测。
+
+### 1.4 面向 Antigravity（AGY）与 agy CLI 的原生 Lifecycle Hook 管控体系设计
+
+针对 Antigravity 2.0、Antigravity IDE 以及 `agy` 命令行客户端，AI卫士提供全链路原生管控支持：
+
+1. **分层 Hook 配置发现与挂接（Hierarchical Hooks）**：
+   - **全局层**：Linux/WSL2 为 `~/.gemini/config/hooks.json`，Windows 宿主机为 `%USERPROFILE%\.gemini\config\hooks.json`；
+   - **工作区层**：`<workspace>/.agents/hooks.json`；
+   - AI卫士通过命名空间 `"ai-guard"` 进行幂等增量挂载，保留用户原有的其他 hook（如 linter、telemetry 等），并支持一键通过 `"enabled": false` 停用或通过 uninstall 干净移除。
+2. **ProtoJSON Wire 协议与执行前拦截（PreToolUse）**：
+   - 适配 AGY 原生标准 I/O 协议：stdin 传入 camelCase ProtoJSON，涵盖 `conversationId`、`workspacePaths`、`toolCall`（`name`、`args`）；
+   - 归一化提取工具调用：将 `run_command`、`write_file`、`edit_file`、`call_mcp_tool` 转换为 AI卫士标准领域对象 `ActionEvent`；
+   - stdout 返回标准决策 JSON：`{"decision": "allow" | "deny" | "ask", "reason": "..."}`。在 `decision = "deny"` 时 Agent 立即终止工具执行，确保零副作用产生。
+3. **Fail-Closed 异常防护与脱敏审计**：
+   - 协议解析异常、输入超长（> 2 MiB）或策略引擎异常时，严格遵循 Fail-Closed 默认阻断（输出 `deny`）；
+   - 输出的 `reason` 及落库的审计事件经脱敏器过滤，杜绝 Token、API Key 及未脱敏内容泄露。
+4. **会话转录与工件治理**：
+   - 只读解析 `~/.gemini/antigravity/transcript.jsonl` 转录文件与 `brain/<conversation-id>/` 工件目录，在宿主机主控界面上统一提供会话检索、轮次预览与带 SHA-256 校验的快照备份。
 
 ---
 
@@ -100,6 +118,10 @@
 | **FR-018** | `desktop` | 全中文宿主机主控桌面界面（六大页面） | P0 | Phase 5 | 交付安全概览（双环境汇总）、Agent 与环境管理（宿主机 + WSL2）、安全策略、统一风险事件、防护诊断/安装/Session 备份、设置与隐私六大中文页面 |
 | **FR-019** | `desktop` | 独立运行保障与子环境断连诚实展示 | P0 | Phase 5 | 未开启 WSL2 时宿主机防护与 UI 100% 独立正常工作；当某 WSL2 发行版未启动或失联时，仅该 WSL2 目标卡片显示“状态未知”，绝不沿用旧绿灯缓存 |
 | **FR-020** | 全局文档与合规 | 保护边界声明与开源发布门禁 | P0 | Phase 5 | 明确展示支持范围与已知盲区（如未覆盖 Hosted Tools、同权限用户绕过限制），通过全部安全与许可证检查 |
+| **FR-AGY-001** | `agent-adapters` | Antigravity (AGY) & `agy` CLI 目标与工作区自动发现 | P0 | Phase 5.5 | 自动发现全局配置（Linux/WSL2 `~/.gemini/config/`，Windows `%USERPROFILE%\.gemini\config\`）与工作区级（`<workspace>/.agents/`）配置，支持探测 AGY 桌面版、IDE 与 `agy` CLI |
+| **FR-AGY-002** | `agent-adapters` / `security` | AGY 原生 ProtoJSON `PreToolUse` Hook 协议适配与拦截 | P0 | Phase 5.5 | 解析 stdin camelCase ProtoJSON，将 `run_command`、`write_file`、`edit_file`、`call_mcp_tool` 转换为通用 `ActionEvent`；Fail-Closed 默认阻断，输出标准 `{"decision":"allow"\|"deny"\|"ask"}` JSON |
+| **FR-AGY-003** | `session` / `backup` | AGY 转录流水（`transcript.jsonl`）与工件只读索引与备份 | P1 | Phase 5.5 | 严格只读解析 AGY 转录流、步骤序号、模型与对话内容，扫描 `brain/<conv_id>/` 工件，支持一键创建 SHA-256 校验的快照备份 |
+| **FR-AGY-004** | `desktop` | 宿主机多 Agent（Codex + AGY）协同管控看板与 Hook 事务安装 | P0 | Phase 5.5 | 宿主机主控界面升级支持 Codex 与 AGY 并行卡片展示、四态防护诊断、一键增量注册/安全卸载 `hooks.json`、事件来源过滤（Codex/AGY）与一键自检 |
 
 ---
 
@@ -112,7 +134,8 @@ flowchart LR
     P2 --> P3["Phase 3 (M4)\nbackup 事务备份、双环境安装器\n策略镜像同步与受管启动"]
     P3 --> P4["Phase 4 (M5 + M1 迁移)\n宿主机统一审计库、WSL2 归并\n与双环境 Session 只读保护"]
     P4 --> P5["Phase 5 (M6+M7)\nWindows 宿主机 Tauri 2 主控端\n双目标调度与 V0.1 发布"]
-    P5 --> P6["Phase 6 (V0.2+ / M8+M9)\n多 Agent 适配、OS 沙箱\n与企业版控制平面"]
+    P5 --> P55["Phase 5.5\nAntigravity (AGY) & agy CLI\n全链路原生 Hook 管控与治理"]
+    P55 --> P6["Phase 6 (V0.2+ / M8+M9)\n多 Agent 扩展、OS 沙箱\n与企业版控制平面"]
 ```
 
 ---
@@ -301,6 +324,54 @@ flowchart LR
 - [ ] **WSL2 跨边界纳管验证**：启动 WSL2 后，宿主机 `AI卫士.exe` 可一键下发策略并挂载 WSL2 Hook，WSL2 内 Codex 触发拒绝事件后可在宿主机桌面端“风险事件页”实时刷新查看到。
 - [ ] **命令注入与断连诚实度测试**：在 UI 输入框注入恶意字符无命令执行；关闭 WSL2 后，WSL2 目标卡片立即显示“状态未知”，不影响宿主机目标卡片的正常状态展示。
 - [ ] PRD 定义的 `AT-01` ～ `AT-12` 验收用例与 `SEC-E2E-001` ～ `SEC-E2E-012` 全部通过并附真实记录。
+
+---
+
+### Phase 5.5：Antigravity（AGY）与 agy CLI 全链路原生 Hook 管控与治理 PRD
+
+#### 4.5.5.1 阶段目标
+在保持现有 Codex 管控能力 100% 稳定运行的前提下，基于 Antigravity 原生 Lifecycle Hook 规范（`hooks.json`），实现对 **Antigravity 2.0（桌面版）**、**Antigravity IDE** 及 **`agy` CLI** 的原生接入与双环境统一治理。实现执行前工具调用（`run_command`、`write_file`、`edit_file`、`call_mcp_tool`）的强拦截、转录文件与工件的只读索引与安全备份，以及宿主机桌面端多 Agent（Codex + AGY）并列治理看板。
+
+#### 4.5.5.2 功能与研发任务说明
+1. **P5.5-T1：`packages/agent-adapters` 之 `AgyHookAdapter` 实现与 ProtoJSON 映射契约**
+   - 实现符合 Antigravity 官方 Draft-07 ProtoJSON 规范的流式反序列化（限制 2 MiB，兼容 camelCase）：
+     - 解析 `conversationId`、`workspacePaths`、`transcriptPath`、`artifactDirectoryPath`、`stepIdx` 与 `toolCall`。
+     - 将工具调用归一化映射为通用 `ActionEvent`：
+       - `toolCall.name == "run_command"` 映射为 `ActionKind::ExecuteShellCommand`，提取 `CommandLine`；
+       - `toolCall.name == "write_file"` 或 `"edit_file"` 映射为 `ActionKind::WriteFile` / `FilePatch`，提取 `Path` 与 `Content`；
+       - `toolCall.name == "call_mcp_tool"` 映射为 `ActionKind::InvokeMcpTool`，提取 `ServerName` 与参数。
+   - 裁决输出协议适配：将策略引擎结果序列化为 `{"decision": "allow" | "deny" | "ask", "reason": "..."}`。
+   - **Fail-Closed 异常保护**：输入为空、超长、JSON 语法错误或引擎解析故障时，严格输出 `{"decision": "deny", "reason": "AI卫士防护保底阻断：..."}`。
+2. **P5.5-T2：`apps/local-service` Hook 入口与事务安装器扩展**
+   - 增加 CLI 极速执行入口：`ai-guard hook agy pre-tool-use`（同时在 Windows `ai-guard.exe` 与 Linux `ai-guard-linux` 可用）。
+   - 实现 AGY Hook 事务安装与卸载：
+     - 支持 `ai-guard install agy [--scope user|project] [--dry-run]` 与 `ai-guard uninstall agy`；
+     - 自动定位全局 `~/.gemini/config/hooks.json` 或项目级 `<workspace>/.agents/hooks.json`；
+     - 调用 `packages/backup` 自动生成带 SHA-256 的快照备份；
+     - 增量合并注入 `"ai-guard"` 命名空间块，不影响用户已有的其他 hook 插件；
+     - 卸载时精准移除 `"ai-guard"` 命名空间并原子回滚。
+3. **P5.5-T3：`packages/session` 之 AGY 转录与工件只读索引与完整性备份**
+   - 支持跨平台探测并只读解析 AGY 转录流（`transcript.jsonl`），提取会话 ID、步骤数、时间戳与脱敏对话内容；
+   - 扫描对应会话的 `brain/<conversation-id>/` 工件目录（工件文件、草稿、临时数据）；
+   - 在 `packages/backup` 建立 AGY 会话快照结构，支持将转录与工件打包为带 SHA-256 校验的快照归档并支持完整性验签。
+4. **P5.5-T4：`apps/desktop` 多 Agent 统一管控看板与交互升级**
+   - 桌面主控端升级为双 Agent 并行架构：在安全概览与 Agent 管理页面独立呈现 **Codex** 与 **Antigravity (AGY)** 两个管理卡片；
+   - 分别展示 Codex 与 AGY 的运行版本、配置路径、当前挂载状态与四态防护诊断（`protected_verified` / `unprotected` 等）；
+   - 支持对 AGY 单独执行一键启用防护（增量写入 `hooks.json`）、一键停用、差异预览与一键离线测试；
+   - 统一风险事件流支持按 Agent 来源（Codex / AGY）进行筛选与脱敏详情查看；
+   - 对话与备份工作区支持无缝切换浏览 Codex 与 AGY 会话列表，支持统一的备份与 SHA-256 验证。
+
+#### 4.5.5.3 交付产物清单
+- `docs/AGY_HOOK_CONTRACT.md`（权威 Wire Protocol 契约）
+- `packages/agent-adapters/src/agy_adapter.rs`
+- `tests/fixtures/agy/*.json`（正常放行、高危删除、敏感凭据越界、畸形输入样例）
+- 单元测试与 E2E 验证脚本：`tests/e2e_agy_pre_tool_use.rs`
+
+#### 4.5.5.4 阶段验收门禁（Phase 5.5 Gate）
+- [ ] **协议兼容测试**：涵盖 `run_command`、`write_file`、`edit_file`、`call_mcp_tool` 四类核心工具调用，正向合法输入 100% 返回 `decision: "allow"`，高危命令（如 `rm -rf /`、读取 `.ssh/id_rsa`）100% 返回 `decision: "deny"`。
+- [ ] **Fail-Closed 异常防护测试**：输入畸形 JSON、截断输入、超大体积 JSON（> 2 MiB），系统 100% 安全返回 `deny`，0 panic，0 异常放行。
+- [ ] **配置零破坏安装与卸载测试**：在包含用户既有 Hook 的 `hooks.json` 模拟环境中执行 `install` 与 `uninstall`，非 AI卫士配置项 100% 保持完好，卸载后完全恢复原样。
+- [ ] **桌面端与只读备份闭环**：在桌面 UI 中成功显示 AGY 状态卡片，能列出 AGY 会话并成功完成带 SHA-256 校验的会话备份与恢复校验。
 
 ---
 
