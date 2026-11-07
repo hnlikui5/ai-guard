@@ -33,4 +33,4 @@ ai-guard-storage = { path = "packages/storage" }
 ai-guard-session = { path = "packages/session" }
 
 [workspace.lints.rust]
-unsafe_code = "forbid"
+unsafe_code = "deny"

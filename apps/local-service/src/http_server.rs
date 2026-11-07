@@ -45,7 +45,7 @@ pub fn try_open_browser(url: &str) {
     #[cfg(target_os = "windows")]
     {
         let app_arg = format!("--app={url}");
-        let size_arg = "--window-size=1280,860";
+        let size_arg = "--window-size=980,640";
         let candidate_bins = [
             r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
             r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
@@ -84,12 +84,12 @@ pub fn try_open_browser(url: &str) {
             let app_arg = format!("--app={url}");
             let opened = if std::path::Path::new(win_edge).exists() {
                 std::process::Command::new(win_edge)
-                    .args([&app_arg, "--window-size=1280,860"])
+                    .args([&app_arg, "--window-size=980,640"])
                     .spawn()
                     .is_ok()
             } else if std::path::Path::new(win_chrome).exists() {
                 std::process::Command::new(win_chrome)
-                    .args([&app_arg, "--window-size=1280,860"])
+                    .args([&app_arg, "--window-size=980,640"])
                     .spawn()
                     .is_ok()
             } else {
@@ -98,7 +98,7 @@ pub fn try_open_browser(url: &str) {
 
             if !opened {
                 let _ = std::process::Command::new("powershell.exe")
-                    .args(["-NoProfile", "-NonInteractive", "-Command", &format!("Start-Process 'msedge.exe' -ArgumentList '--app={url} --window-size=1280,860'")])
+                    .args(["-NoProfile", "-NonInteractive", "-Command", &format!("Start-Process 'msedge.exe' -ArgumentList '--app={url} --window-size=980,640'")])
                     .spawn();
             }
         } else {
@@ -130,6 +130,38 @@ fn is_ai_guard_already_running(addr: std::net::SocketAddr) -> bool {
         }
     }
     false
+}
+
+#[cfg(target_os = "windows")]
+#[allow(unsafe_code)]
+pub fn setup_system_tray(sock_addr: std::net::SocketAddr) -> Option<tray_item::TrayItem> {
+    use tray_item::{IconSource, TrayItem};
+    let hicon = unsafe {
+        windows_sys::Win32::UI::WindowsAndMessaging::LoadIconW(
+            0,
+            windows_sys::Win32::UI::WindowsAndMessaging::IDI_SHIELD,
+        )
+    };
+    let icon_src = if hicon != 0 {
+        IconSource::RawIcon(hicon)
+    } else {
+        IconSource::Resource("")
+    };
+
+    let mut tray = match TrayItem::new("AI卫士", icon_src) {
+        Ok(t) => t,
+        Err(_) => return None,
+    };
+    let url_open = format!("http://{sock_addr}");
+    let url_open_clone = url_open.clone();
+    let _ = tray.add_label("🛡️ AI卫士 v0.1 (本地防护运行中)");
+    let _ = tray.add_menu_item("🖥️ 打开控制中心界面", move || {
+        try_open_browser(&url_open_clone);
+    });
+    let _ = tray.add_menu_item("❌ 退出 AI卫士", move || {
+        std::process::exit(0);
+    });
+    Some(tray)
 }
 
 /// 启动本地回路 HTTP JSON 服务（多线程并发处理浏览器请求 + 3s 空闲读超时保护，防止浏览器预连接阻塞）。
@@ -184,6 +216,13 @@ pub fn run_http_server(
     }
 
     let listener = listener_opt.unwrap();
+
+    #[cfg(target_os = "windows")]
+    let _tray_guard = if max_requests_for_test.is_none() {
+        setup_system_tray(final_addr)
+    } else {
+        None
+    };
 
     if max_requests_for_test.is_none() {
         println!("==================================================================");

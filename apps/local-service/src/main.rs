@@ -1,3 +1,5 @@
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
+
 mod cli;
 mod http_server;
 mod target_manager;
@@ -31,6 +33,12 @@ use std::process::Command;
 use std::time::Instant;
 
 fn main() {
+    #[cfg(target_os = "windows")]
+    #[allow(unsafe_code)]
+    unsafe {
+        windows_sys::Win32::System::Console::AttachConsole(0xFFFFFFFF);
+    }
+
     let cli = Cli::parse();
     let command = cli.command.unwrap_or_else(|| Commands::Serve {
         bind: cli.bind.unwrap_or_else(|| "127.0.0.1:17900".to_string()),
