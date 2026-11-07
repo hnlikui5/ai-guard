@@ -1,12 +1,12 @@
 # AI卫士（AI Guard）产品需求文档与分阶段研发 PRD（优化定稿版）
 
 - **文档编号**：`AG-PRD-V0.1`
-- **版本**：`V0.1-Optimized`（基于初始方案包评估与本机 `codex-cli 0.160.1` 实况优化）
+- **版本**：`V0.1-Host-Centric`（Windows 宿主机主控 + 宿主机/WSL2 双环境 Codex 统一纳管定稿版）
 - **日期**：2026-11-07
 - **文档状态**：已确认基线（研发与阶段验收唯一依据）
 - **代码仓库**：`https://github.com/hnlikui5/ai-guard.git`
-- **首发目标环境**：Windows 宿主机（Tauri 2 桌面管理端）+ WSL2 Ubuntu（Rust 安全内核 + Codex CLI `0.160.1+`）
-- **主力技术栈**：Rust（Workspace 核心与 Hook Runner）+ SQLite（WAL 本地持久化）+ Tauri 2 / React / TypeScript（中文桌面端）
+- **产品运行形态**：**Windows 宿主机原生桌面应用（主控中心）**，同时纳管 **Windows 宿主机下 Codex（桌面版/CLI）** 与 **WSL2 子系统下 Codex（CLI/Daemon）**
+- **主力技术栈**：Rust（跨平台同源编译 Windows `.exe` 与 WSL2 Linux 探针）+ SQLite（宿主机统一主库 + WSL2 缓冲同步）+ Tauri 2 / React / TypeScript（宿主机中文桌面端）
 - **开源许可证**：Apache License 2.0（个人版）
 
 ---
@@ -15,25 +15,29 @@
 
 ### 1.1 一句话产品定义
 
-**AI卫士（AI Guard）** 是一款面向 AI 编程 Agent 的本地安全防护与运行治理平台，在 Agent 真实执行节点（WSL2）对工具调用进行执行前风险判定、阻断高危操作、提供可验证的防护状态诊断与脱敏审计，并在安全底座稳定后提供会话（Session）只读索引与安全备份恢复能力。
+**AI卫士（AI Guard）** 是一款运行在 **Windows 宿主机** 上的 AI 编程 Agent 本地安全防护与运行治理桌面软件，能够**同时发现、保护和管理“宿主机本机 Codex（桌面应用/CLI）”与“WSL2 子系统内 Codex”**，在各自执行节点就地阻断高危操作、在宿主机桌面端统一呈现防护状态与脱敏审计，并提供跨环境的会话（Session）只读索引与安全备份能力。
 
-### 1.2 相较初始方案包的 6 项关键优化（已纳入本 PRD）
+### 1.2 相较初始方案包的 7 项关键重构与优化（已纳入本 PRD）
 
-1. **对齐本机 `codex-cli 0.160.1` 真实运行架构**：
-   - 实测本机 `codex-cli 0.160.1` 已默认启用 `hooks (stable)`、`daemon_auto_start (stable)`、`unified_exec (stable)`，且 `~/.codex/` 下存在活跃的 `app-server-daemon` 及多个 SQLite 状态库（`state_5.sqlite`、`thread_history_1.sqlite`、`logs_2.sqlite`）。
-   - 本 PRD 将 **Hook 配置写入后的 Daemon 感知/刷新验证** 以及 **`Bash` / `unified_exec` / `write_stdin` / `apply_patch` / `MCP` 真实工具名映射** 纳入 Phase 0/1 强制验收项。
-2. **明确“安全主线优先 + Backup 前置 + M1 Session 阶段性汇入”排期策略**：
-   - V0.1 坚持以 **“真实执行前拦截闭环（Hook Allow/Deny + 零副作用证明）”** 为第一优先级（Phase 0 ～ Phase 5 主线）。
-   - `packages/backup` 在 **Phase 3** 即投入使用（承担 Codex 配置文件与策略文件的事务备份、SHA-256 校验与原子回滚）。
-   - 原 M1 阶段的 Codex Session 管理成果在 **Phase 4B（安全底座跑通后）** 对齐迁入 `packages/session`，实现只读会话浏览与备份恢复，既不阻塞安全主线，也不丢弃既有资产。
-3. **扩展 Hook 事件与工具覆盖模型**：
-   - 适配层（`packages/agent-adapters`）在架构上完整建模 Codex 四大标准 Hook 事件（`PreToolUse`、`PermissionRequest`、`UserPromptSubmit`、`PostToolUse`），V0.1 首期重点激活并验证 `PreToolUse`，预留提示词防泄密与输出脱敏扩展点。
-4. **解决无常驻 Daemon 模式下 SQLite 并发锁与 Hook 超时矛盾**：
+1. **架构视角纠正：从“WSL2 中心化”重构为“Windows 宿主机中心化主控 + 双环境纳管”**：
+   - 修正原方案将主库与主服务放在 WSL2 内的主次颠倒假设。明确 **AI卫士最终是运行在 Windows 宿主机上的桌面软件**，全局策略真源（`policy.toml`）、统一审计库（`events.db`）和备份中心均位于 Windows 宿主机（`%LOCALAPPDATA%\ai-guard\`）。
+   - 宿主机主程序向下统一纳管两类环境：**宿主机原生环境（如 `C:\Users\kui.li\.codex`，含 Codex 桌面版与 750MB+ 会话库）** 与 **WSL2 子系统环境（如 `/home/ai-li/.codex`，含 WSL2 `codex-cli`）**。即使未开启 WSL2，宿主机防护与管理功能依然完整可用。
+2. **“控制面集中管理、数据面（Hook 拦截）就地极速执行”机制**：
+   - 同一套 Rust 核心代码编译出宿主机 `ai-guard.exe` 与 WSL2 探针 `ai-guard-linux`：宿主机 Codex 直接触发 `ai-guard.exe hook`；WSL2 Codex 触发由宿主机自动分发到 WSL2 内的 `ai-guard-linux hook`（读取宿主机下发的策略镜像），避免每次工具调用跨 Windows/WSL2 虚拟机拉起进程的高延迟，再由宿主机主控增量拉取归并 WSL2 审计事件。
+3. **对齐本机宿主机 Codex（`0.166.0`）与 WSL2 Codex（`0.160.1`）真实运行架构**：
+   - 实测本机宿主机已安装 Codex 桌面版（`C:\Users\kui.li\.codex`，含 `codex.exe` 与 `codex-command-runner-0.166.0-alpha.5.1.exe`），WSL2 内已安装 `codex-cli 0.160.1`（`hooks`、`daemon_auto_start`、`unified_exec` 均为 `stable=true`）。
+   - 本 PRD 将 **宿主机与 WSL2 双环境的 Hook 配置结构、Daemon 刷新验证及跨平台工具名映射** 纳入 Phase 0/1 强制验收项。
+4. **明确“安全主线优先 + Backup 前置 + M1 Session 双环境汇入”排期策略**：
+   - V0.1 坚持以 **“真实执行前拦截闭环（Hook Allow/Deny + 零副作用证明）”** 为第一优先级。
+   - `packages/backup` 在 **Phase 3** 即投入使用（承担宿主机与 WSL2 Codex 配置文件、策略文件的事务备份、SHA-256 校验与原子回滚）。
+   - 原 M1 阶段的 Codex Session 管理成果在 **Phase 4B** 对齐迁入 `packages/session`，支持在宿主机界面上统一只读浏览和备份 **宿主机 `C:\Users\<User>\.codex` 与 WSL2 `~/.codex`** 的会话数据。
+5. **扩展跨平台 Hook 事件、Shell 语法与路径覆盖模型**：
+   - 适配层完整建模 Codex 四大标准 Hook 事件（`PreToolUse`、`PermissionRequest`、`UserPromptSubmit`、`PostToolUse`）。
+   - 规则引擎同时覆盖 **Linux Shell（`bash`/`sh`）** 与 **Windows Shell（`powershell`/`pwsh`/`cmd`）** 的高危命令语法及 Windows/POSIX 敏感路径。
+6. **解决无常驻 Daemon 模式下 SQLite 并发锁与 Hook 超时矛盾**：
    - 单次 Hook 进程内策略裁决与审计落盘解耦：SQLite 开启 `WAL` 模式且设置 `busy_timeout = 15ms`；若遇锁竞争或 I/O 异常，**优先在 50ms 内向 `stdout` 返回 `Deny/Allow` 协议 JSON**，未落盘事件自动写入本地无锁 `events-fallback.jsonl` 并在后续查询时归并，杜绝因写库阻塞引发 Hook 超时放行（Fail-Open）。
-5. **统一工程目录与架构决策记录（ADR）体系**：
-   - 统一收敛至工程根目录 `AGENTS.md`、`docs/decisions/`、`docs/ARCHITECTURE.md` 与本文件 `docs/PRD_V0.1.md`。
-6. **补齐 WSL2 Rust 工具链前置门禁**：
-   - 在 Phase 0 明确将安装 Rust stable 工具链及锁定 `rust-toolchain.toml` 列为编码前准备事项。
+7. **统一工程目录与双目标编译工具链基线**：
+   - 在 Phase 0 明确建立支持 Linux 与 Windows 双目标编译的 Rust 工具链基线。
 
 ### 1.3 面向 Codex CLI 与 Codex 桌面应用（Codex Desktop）的双形态支持设计
 
@@ -269,45 +273,40 @@ flowchart LR
 
 ---
 
-### Phase 5（对应 M6 + M7）：Windows Tauri 2 中文桌面端与 V0.1 个人版发布 PRD
+### Phase 5（对应 M6 + M7）：Windows 宿主机 Tauri 2 中文主控桌面端、双环境联调与 V0.1 个人版发布 PRD
 
 #### 4.5.1 阶段目标
-构建运行于 Windows 宿主机的 Tauri 2 + React + TypeScript 全中文管理界面，通过白名单桥接调用 WSL2 内的 `ai-guard` CLI，完成全部交互闭环并通过 V0.1 开源发布门禁。
+交付运行于 Windows 宿主机的 Tauri 2 + React + TypeScript 全中文主控桌面程序（`AI卫士.exe`），在宿主机上统一管理 **宿主机本机 Codex（`C:\Users\<User>\.codex`）** 与 **WSL2 子系统 Codex（`/home/<user>/.codex`）**，完成全部交互闭环并通过 V0.1 开源发布门禁。
 
 #### 4.5.2 功能与研发任务说明
-1. **P5-T1：Windows ↔ WSL2 受限命令桥接层（对应 M6-01、M6-02）**
-   - 在 `apps/desktop/src-tauri` 中实现受控桥接函数：
-     - 仅允许调用白名单子命令（`status`, `doctor`, `install --dry-run`, `install`, `uninstall --dry-run`, `uninstall`, `rule validate`, `rule test`, `events list`, `events export`, `self-test`, `session list`, `session backup`）。
-     - 严禁拼装 Shell 字符串，统一使用 `std::process::Command::new("wsl.exe").args(["--distribution", distro, "--exec", ai_guard_bin, ...])`。
-     - 校验返回 JSON 的 `api_version == "1.0"`，设置单次命令超时与输出体积上限。
+1. **P5-T1：宿主机双目标调度器（`TargetManager`）与 WSL2 受限桥接层（对应 M6-01、M6-02）**
+   - 在 `apps/desktop/src-tauri` 与宿主机核心服务中实现统一的目标调度器：
+     - **对宿主机目标（`WindowsHost`）**：直接调用宿主机进程内服务或同目录 `ai-guard.exe` 管理 `C:\Users\<User>\.codex`，并在宿主机挂载 `ai-guard.exe hook`。
+     - **对 WSL2 目标（`Wsl2Distro`）**：自动分发更新 WSL2 内的 `~/.local/bin/ai-guard-linux`，将宿主机主策略 `policy.toml` 同步至 WSL2，并通过独立 `argv` 调用 `wsl.exe --distribution <distro> --exec ~/.local/bin/ai-guard-linux <subcommand> --json` 执行安装、自检与增量审计拉取。
+     - 严禁拼装 Shell 字符串，设置单次命令超时与输出体积上限。
 2. **P5-T2：全中文桌面端核心页面交付（对应 M6-03、M6-04）**
-   - **1. 安全概览（`/overview`）**：四态防护状态卡片（带颜色与盲区说明）、最近 24h 拦截统计、一键自检按钮、受管启动命令快捷复制。
-   - **2. Agent 管理（`/agents`）**：展示 WSL2 发行版、Codex `0.160.1` 路径与版本、各工具路径覆盖矩阵（`Bash`: 已验证 / `apply_patch`: 已验证 / `Hosted Tools`: 不支持）。
-   - **3. 安全策略（`/policies`）**：观察/保护模式切换、规则列表查询与启停、内置“规则沙盒测试器”（输入命令查看模拟命中结果）、策略历史版本回滚。
-   - **4. 风险事件（`/events`）**：时间线展示 Allow/Deny/Observe 记录、按规则/时间筛选、查看中文拦截原因与脱敏摘要、一键导出脱敏报告。
-   - **5. 防护诊断与安装恢复（`/diagnostics` & `/integrations`）**：可视化执行 `install --dry-run` 查看配置文件 Diff、二次确认安装/卸载、`/hooks` 信任操作图文指引、配置备份一键恢复、（若启用 Phase 4B）Session 列表与备份入口。
-   - **6. 设置与隐私（`/settings`）**：本地数据存储路径说明、审计保留周期设置、产品安全能力边界与免责声明。
+   - **1. 安全概览（`/overview`）**：汇总展示宿主机 Codex 与 WSL2 Codex 的各自四态防护状态卡片、全局/分环境最近 24h 拦截统计、一键全环境自检。
+   - **2. Agent 与环境管理（`/agents`）**：清晰列出已发现的所有受管环境（如 `[宿主机 Windows] Codex Desktop / CLI` 与 `[WSL2: Ubuntu] Codex CLI`），分别展示版本、路径、能力覆盖矩阵及一键启用/停用保护。
+   - **3. 安全策略（`/policies`）**：在宿主机集中编辑观察/保护模式与规则列表（修改后自动同步至已启用的 WSL2 环境）、内置“跨平台规则沙盒测试器”（支持测试 Bash 与 PowerShell/CMD 命令）、策略历史版本回滚。
+   - **4. 风险事件（`/events`）**：统一时间线展示宿主机与 WSL2 汇总的 Allow/Deny/Observe 记录（带环境来源标签过滤）、查看中文拦截原因与脱敏摘要、一键导出脱敏报告。
+   - **5. 防护诊断与安装恢复（`/diagnostics` & `/integrations`）**：针对宿主机或 WSL2 目标可视化执行 `install --dry-run` 查看配置文件 Diff、二次确认安装/卸载、`/hooks` 信任引导、配置备份恢复，以及跨环境（宿主机 + WSL2）Session 只读浏览与一键备份。
+   - **6. 设置与隐私（`/settings`）**：宿主机主数据目录与 WSL2 缓冲路径说明、审计保留周期设置、产品安全能力边界与免责声明。
 3. **P5-T3：V0.1 发布质量与开源合规门禁（对应 M7-01 ～ M7-04）**
-   - 完成干净环境安装/自检/卸载测试、CI 脚本、依赖许可证与漏洞扫描、产物 SHA-256 校验清单及 `SECURITY.md` / `LIMITATIONS.md` 文档定稿。
+   - 完成宿主机 + WSL2 双环境安装/自检/卸载测试、CI 脚本、依赖许可证与漏洞扫描、产物 SHA-256 校验清单及 `SECURITY.md` / `LIMITATIONS.md` 文档定稿。
 
 #### 4.5.3 阶段验收门禁（Phase 5 / V0.1-GA Gate）
-- [ ] 命令注入防护测试：在 UI 规则测试框或路径配置框中输入 `$(touch /tmp/pwn)`、`; rm -rf /`、`` `id` ``，验证 WSL2 内无任何命令被拼接执行。
-- [ ] 断连诚实度测试：关闭 WSL2 或重命名 `ai-guard` 二进制后，UI 立即显示“状态未知 / 未受保护”，不残留绿色“已验证保护”状态。
-- [ ] PRD 第 9 章定义的 `AT-01` ～ `AT-12` 验收用例与技术方案 `SEC-E2E-001` ～ `SEC-E2E-012` 全部通过并附真实记录。
+- [ ] **宿主机独立运行验证**：在未启动 WSL2 的情况下，宿主机 `AI卫士.exe` 正常打开，且对宿主机 Codex（`C:\Users\<User>\.codex`）的策略管理、Hook 拦截、审计查询与 Session 浏览备份 100% 正常工作。
+- [ ] **WSL2 跨边界纳管验证**：启动 WSL2 后，宿主机 `AI卫士.exe` 可一键下发策略并挂载 WSL2 Hook，WSL2 内 Codex 触发拒绝事件后可在宿主机桌面端“风险事件页”实时刷新查看到。
+- [ ] **命令注入与断连诚实度测试**：在 UI 输入框注入恶意字符无命令执行；关闭 WSL2 后，WSL2 目标卡片立即显示“状态未知”，不影响宿主机目标卡片的正常状态展示。
+- [ ] PRD 定义的 `AT-01` ～ `AT-12` 验收用例与 `SEC-E2E-001` ～ `SEC-E2E-012` 全部通过并附真实记录。
 
 ---
 
-### Phase 6（对应 M8 + M9，V0.1.5 ～ V1.0 演进）：Codex 桌面应用原生目标、多 Agent 适配、OS 沙箱与企业版控制平面
+### Phase 6（对应 M8 + M9，V0.2+ 演进）：多 Agent 适配、OS 沙箱与企业版控制平面
 
-- **Phase 5.5（V0.1.5 专项增强：Codex 桌面应用全模式闭环）**：
-  - **WSL2 工作区模式**：在 V0.1（Phase 0 ～ Phase 5）中已随 WSL2 `~/.codex` 与 `app-server-daemon` 刷新检测同步支持。
-  - **Windows 原生执行目标模式（`WindowsNative`）**：
-    1. 将同一套 `apps/local-service` Rust 代码编译为 Windows 原生 `ai-guard.exe`，随 Tauri 桌面安装包一同分发。
-    2. 支持扫描与挂载 Windows 宿主机 `C:\Users\<User>\.codex\` 配置与 Hook（针对 Windows Shell 引号转义做安全参数封装）。
-    3. AI卫士桌面端“Agent 管理页”支持同时纳管并切换查看 **`WSL2 Codex (CLI / Desktop WSL)`** 与 **`Windows Native Codex Desktop`** 两个执行目标的防护状态、风险事件与 Session 备份。
 - **Phase 6A（V0.2 个人版增强）**：
-  - 接入 **Claude Code** 与 **OpenCode**（独立实现 `AgentAdapter` 并完成各自真实 Hook E2E 验证）。
-  - 完整版跨 Agent Session 搜索、恢复冲突预览与安全恢复。
-  - 引入 **nono / Linux Landlock**（WSL2）及 **Windows Job Object / 受限令牌** 沙箱 PoC，对文件读写白名单与网络外传提供 OS 级强制隔离验证。
+  - 接入 **Claude Code** 与 **OpenCode**（同样支持宿主机与 WSL2 双环境探测与就地 Hook 拦截）。
+  - 完整版跨 Agent Session 全文搜索、恢复冲突预览与安全恢复。
+  - 引入 **nono / Linux Landlock**（WSL2 侧）及 **Windows Job Object / 受限令牌**（宿主机侧）沙箱 PoC，对文件读写白名单与网络外传提供 OS 级强制隔离验证。
 - **Phase 6B（V1.0 企业版，独立私有仓库 `ai-guard-enterprise`）**：
-  - 基于 Rust Axum + PostgreSQL 实现设备注册与 mTLS 身份认证、Ed25519 签名策略强制下发（防止终端私自放宽企业基线）、OIDC/RBAC 权限控制与多租户脱敏审计汇聚中心。
+  - 基于 Rust Axum + PostgreSQL 实现设备注册与 mTLS 身份认证、Ed25519 签名策略强制下发（宿主机主控验签后再分发至本机与 WSL2）、OIDC/RBAC 权限控制与多租户脱敏审计汇聚中心。
