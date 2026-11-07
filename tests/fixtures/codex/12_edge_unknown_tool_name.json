@@ -1,0 +1,14 @@
+{
+  "session_id": "01a1b42d-7761-7c71-89a4-355af5310099",
+  "turn_id": "01a1b42d-7782-70d2-91fc-5d0a66dd3dee",
+  "transcript_path": null,
+  "cwd": "/home/user/workspace/project",
+  "hook_event_name": "PreToolUse",
+  "model": "gpt-5.6-sol",
+  "permission_mode": "default",
+  "tool_name": "unknown_future_tool",
+  "tool_input": {
+    "foo": "bar"
+  },
+  "tool_use_id": "call_unknown_012"
+}

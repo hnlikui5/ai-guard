@@ -1,0 +1,14 @@
+{
+  "session_id": "01a1b42e-202f-7c83-a826-5659c955a940",
+  "turn_id": "01a1b42e-2039-7a01-861c-34612325a2db",
+  "transcript_path": "/home/user/.codex/sessions/2026/11/07/rollout-01a1b42e.jsonl",
+  "cwd": "/home/user/workspace/project",
+  "hook_event_name": "PreToolUse",
+  "model": "gpt-5.6-sol",
+  "permission_mode": "default",
+  "tool_name": "apply_patch",
+  "tool_input": {
+    "command": "*** Begin Patch\n*** Update File: ../../.ssh/authorized_keys\n@@\n+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI test@attacker\n*** End Patch\n"
+  },
+  "tool_use_id": "call_patch_ssh_008"
+}

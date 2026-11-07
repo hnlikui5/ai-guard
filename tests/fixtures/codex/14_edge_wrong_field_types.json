@@ -1,0 +1,11 @@
+{
+  "session_id": 12345,
+  "cwd": [
+    "not",
+    "a",
+    "string"
+  ],
+  "hook_event_name": "PreToolUse",
+  "tool_name": 999,
+  "tool_input": "raw_string_instead_of_object"
+}

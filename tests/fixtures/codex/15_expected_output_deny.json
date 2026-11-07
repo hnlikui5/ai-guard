@@ -1,0 +1,7 @@
+{
+  "hookSpecificOutput": {
+    "hookEventName": "PreToolUse",
+    "permissionDecision": "deny",
+    "permissionDecisionReason": "[AI卫士阻断] 命中测试阻断规则 TEST-DENY-001 (AI_GUARD_BLOCK_ME)"
+  }
+}

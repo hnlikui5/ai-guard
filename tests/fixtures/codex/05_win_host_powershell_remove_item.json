@@ -1,0 +1,14 @@
+{
+  "session_id": "01a1b430-1111-7000-8000-000000000005",
+  "turn_id": "01a1b430-2222-7000-8000-000000000005",
+  "transcript_path": "C:\\Users\\demo\\.codex\\sessions\\2026\\11\\07\\rollout-01a1b430.jsonl",
+  "cwd": "C:\\Users\\demo\\workspace\\project",
+  "hook_event_name": "PreToolUse",
+  "model": "gpt-5.6-sol",
+  "permission_mode": "default",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "powershell.exe -NoProfile -Command \"Remove-Item -Path C:\\Users\\demo\\* -Recurse -Force\""
+  },
+  "tool_use_id": "call_win_rm_005"
+}

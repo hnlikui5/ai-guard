@@ -1,0 +1,7 @@
+{
+  "session_id": "01a1b42d-7761-7c71-89a4-355af5310099",
+  "turn_id": "01a1b42d-7782-70d2-91fc-5d0a66dd3dee",
+  "cwd": "/home/user/workspace/project",
+  "hook_event_name": "PreToolUse",
+  "tool_name": "Bash"
+}

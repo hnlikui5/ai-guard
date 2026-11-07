@@ -1,0 +1,14 @@
+{
+  "session_id": "01a1b42d-7761-7c71-89a4-355af5310099",
+  "turn_id": "01a1b42d-7782-70d2-91fc-5d0a66dd3dee",
+  "transcript_path": "/home/user/.codex/sessions/2026/11/07/rollout-01a1b42d.jsonl",
+  "cwd": "/home/user/workspace/project",
+  "hook_event_name": "PreToolUse",
+  "model": "gpt-5.1-codex-max",
+  "permission_mode": "default",
+  "tool_name": "mcp__demo__ping",
+  "tool_input": {
+    "msg": "hello_from_codex"
+  },
+  "tool_use_id": "call_mcp_ns_010"
+}

@@ -1,0 +1,14 @@
+{
+  "session_id": "01a1b424-7a3c-70a3-9375-d6e356b7fe77",
+  "turn_id": "01a1b424-7a5c-7593-866d-38a98c8279c9",
+  "transcript_path": "/home/user/.codex/sessions/2026/11/07/rollout-01a1b424.jsonl",
+  "cwd": "/home/user/workspace/project",
+  "hook_event_name": "PreToolUse",
+  "model": "gpt-5.6-sol",
+  "permission_mode": "default",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "pwd && git status --short"
+  },
+  "tool_use_id": "call_wsl2_safe_001"
+}

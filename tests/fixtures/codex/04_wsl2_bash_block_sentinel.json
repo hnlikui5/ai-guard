@@ -1,0 +1,14 @@
+{
+  "session_id": "01a1b424-7a3c-70a3-9375-d6e356b7fe77",
+  "turn_id": "01a1b424-7a5c-7593-866d-38a98c8279c9",
+  "transcript_path": "/tmp/ai-guard-m0-probe/codex_home/sessions/2026/11/07/rollout-01a1b424.jsonl",
+  "cwd": "/tmp/ai-guard-m0-probe/workspace",
+  "hook_event_name": "PreToolUse",
+  "model": "gpt-5.1-codex-max",
+  "permission_mode": "bypassPermissions",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "echo AI_GUARD_BLOCK_ME && touch /tmp/ai-guard-m0-probe/sentinel.txt"
+  },
+  "tool_use_id": "call_probe_001"
+}

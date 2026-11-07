@@ -1,0 +1,33 @@
+{
+  "id": 2,
+  "result": {
+    "data": [
+      {
+        "cwd": "/home/user/workspace/project",
+        "hooks": [
+          {
+            "key": "/home/user/.codex/config.toml:pre_tool_use:0:0",
+            "eventName": "preToolUse",
+            "handlerType": "command",
+            "command": "/home/user/.local/bin/ai-guard-linux hook codex pre-tool-use",
+            "async": false,
+            "matcher": "*",
+            "timeoutSec": 5,
+            "statusMessage": "AI卫士安全检查中...",
+            "additionalContextLimit": null,
+            "sourcePath": "/home/user/.codex/config.toml",
+            "source": "user",
+            "pluginId": null,
+            "displayOrder": 0,
+            "enabled": true,
+            "isManaged": false,
+            "currentHash": "sha256:10f0221bc35352214715ccf74eea4dbaeb9353b61dc64c30a0dd501bbbc007f4",
+            "trustStatus": "trusted"
+          }
+        ],
+        "warnings": [],
+        "errors": []
+      }
+    ]
+  }
+}
