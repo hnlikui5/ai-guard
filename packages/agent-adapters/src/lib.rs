@@ -6,8 +6,14 @@
 //! - 当输入为空、超长、非合法 UTF-8、JSON 语法错误或缺失必填字段时，不发生 panic，
 //!   直接生成显式 Fail-Closed `Deny` 决策并序列化为合法的单行 Codex `PreToolUse` JSON。
 
+pub mod agy_adapter;
 pub mod installer;
 
+pub use agy_adapter::{
+    format_agy_pre_tool_use_output, handle_agy_pre_tool_use_bytes_with_engine,
+    parse_agy_pre_tool_use_bytes, read_and_parse_agy_pre_tool_use, AgyPreToolUseWireInput,
+    AgyPreToolUseWireOutput, AgyToolCallWireInput, MAX_AGY_HOOK_STDIN_BYTES,
+};
 pub use installer::{
     compute_unified_diff, inspect_toml_hooks, install_codex_hook, preflight_codex_run,
     render_managed_toml_block, strip_managed_toml_block, uninstall_codex_hook, InstallReport,

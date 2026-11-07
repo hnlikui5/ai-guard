@@ -375,15 +375,29 @@ fn rule_matches_context(rule: &PolicyRule, event: &ActionEvent) -> bool {
     if !rule.os_scope.matches_env(&event.environment_kind) {
         return false;
     }
-    if rule.agent != "*" && !rule.agent.eq_ignore_ascii_case(&event.agent) {
+    if rule.agent != "*"
+        && !rule
+            .agent
+            .split('|')
+            .any(|a| a.trim().eq_ignore_ascii_case(&event.agent))
+    {
         return false;
     }
     if rule.tool != "*" {
-        if let Some(prefix) = rule.tool.strip_suffix('*') {
-            if !event.tool_name.starts_with(prefix) {
-                return false;
+        let tool_matched = rule.tool.split('|').any(|t| {
+            let t = t.trim();
+            if let Some(prefix) = t.strip_suffix('*') {
+                event.tool_name.starts_with(prefix)
+            } else if t.eq_ignore_ascii_case(&event.tool_name) {
+                true
+            } else if t.eq_ignore_ascii_case("bash") && event.action_kind == ActionKind::Shell {
+                // 当规则指定为通用 Bash/Shell 时，自动兼容标准化为 Shell 的其他 Agent 工具（如 AGY 的 run_command）
+                true
+            } else {
+                false
             }
-        } else if !rule.tool.eq_ignore_ascii_case(&event.tool_name) {
+        });
+        if !tool_matched {
             return false;
         }
     }

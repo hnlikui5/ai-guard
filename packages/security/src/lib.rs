@@ -59,6 +59,9 @@ pub enum ClientSurface {
     CodexDesktopApp,
     CodexCli,
     CodexAppServerDaemon,
+    AgyCli,
+    AgyDesktopApp,
+    AgyIde,
     Unknown,
 }
 

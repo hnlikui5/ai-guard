@@ -357,6 +357,36 @@ pub enum InstallAgents {
         #[arg(long)]
         json: bool,
     },
+    /// 安装或预览 Antigravity (AGY) PreToolUse 防护钩子
+    Agy {
+        /// 目标环境标识（如 host:windows 或 wsl2:Ubuntu）
+        #[arg(long, default_value = "wsl2:Ubuntu")]
+        target: String,
+
+        /// 安装作用域：user | project
+        #[arg(long, default_value = "user")]
+        scope: String,
+
+        /// 显式指定 hooks.json 所在目录或配置文件路径（可选）
+        #[arg(long)]
+        config_path: Option<String>,
+
+        /// 显式指定 Hook 执行命令（省略时自动指向当前 ai-guard 二进制）
+        #[arg(long)]
+        hook_command: Option<String>,
+
+        /// 显式指定备份仓库根目录
+        #[arg(long)]
+        backup_dir: Option<String>,
+
+        /// 仅预览 Unified Diff 与影响范围，不修改磁盘文件
+        #[arg(long)]
+        dry_run: bool,
+
+        /// 以 JSON 格式输出安装或预览结果
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -386,6 +416,32 @@ pub enum UninstallAgents {
         /// 当检测到外部修改冲突时，仍强制仅剥离 AI卫士受管段落
         #[arg(long)]
         force: bool,
+
+        /// 以 JSON 格式输出卸载报告
+        #[arg(long)]
+        json: bool,
+    },
+    /// 安全卸载 Antigravity (AGY) PreToolUse 防护钩子
+    Agy {
+        /// 目标环境标识（如 host:windows 或 wsl2:Ubuntu）
+        #[arg(long, default_value = "wsl2:Ubuntu")]
+        target: String,
+
+        /// 卸载作用域：user | project
+        #[arg(long, default_value = "user")]
+        scope: String,
+
+        /// 显式指定 hooks.json 所在目录或配置文件路径（可选）
+        #[arg(long)]
+        config_path: Option<String>,
+
+        /// 显式指定备份仓库根目录
+        #[arg(long)]
+        backup_dir: Option<String>,
+
+        /// 仅预览卸载 Diff，不修改磁盘文件
+        #[arg(long)]
+        dry_run: bool,
 
         /// 以 JSON 格式输出卸载报告
         #[arg(long)]
@@ -535,11 +591,26 @@ pub enum HookAgents {
         #[command(subcommand)]
         event: CodexHookEvents,
     },
+    /// Antigravity（AGY）与 agy CLI Hook 协议入口
+    Agy {
+        #[command(subcommand)]
+        event: AgyHookEvents,
+    },
 }
 
 #[derive(Debug, Subcommand)]
 pub enum CodexHookEvents {
     /// Codex PreToolUse 执行前拦截钩子
+    PreToolUse {
+        /// 可选自定义 TOML 策略文件路径（也可通过 AI_GUARD_POLICY_PATH 环境变量指定）
+        #[arg(long)]
+        policy: Option<String>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum AgyHookEvents {
+    /// AGY PreToolUse 执行前拦截钩子（stdin 接收 ProtoJSON，stdout 输出标准 decision）
     PreToolUse {
         /// 可选自定义 TOML 策略文件路径（也可通过 AI_GUARD_POLICY_PATH 环境变量指定）
         #[arg(long)]

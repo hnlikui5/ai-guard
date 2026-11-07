@@ -891,8 +891,9 @@
                 <!-- 历史对话筛选工具条 -->
                 <div id="session-toolbar" style="display:flex;align-items:center;gap:6px;">
                   <button onclick="filterSessions('all')" id="sess-filter-all" class="btn btn-primary btn-sm">全部</button>
-                  <button onclick="filterSessions('host')" id="sess-filter-host" class="btn btn-outline btn-sm">Windows 宿主机</button>
-                  <button onclick="filterSessions('wsl2')" id="sess-filter-wsl2" class="btn btn-outline btn-sm">WSL2 子系统</button>
+                  <button onclick="filterSessions('host')" id="sess-filter-host" class="btn btn-outline btn-sm">Windows Codex</button>
+                  <button onclick="filterSessions('wsl2')" id="sess-filter-wsl2" class="btn btn-outline btn-sm">WSL2 Codex</button>
+                  <button onclick="filterSessions('agy')" id="sess-filter-agy" class="btn btn-outline btn-sm">🚀 Antigravity (AGY)</button>
                   <input id="sess-search" oninput="renderSessions()" class="input-control" style="width:190px;height:30px;font-size:12px;" placeholder="搜索标题或项目目录..." />
                 </div>
               </div>
@@ -1128,18 +1129,29 @@
         `;
       }
 
-      // 渲染 2 个等高对称环境卡片
+      // 渲染多 Agent / 多环境对称环境卡片
       const envContainer = document.getElementById('env-cards-container');
       envContainer.innerHTML = targets.map(t => {
+        const isAgy = t.target_id.includes('AGY');
         const isHost = t.target_id.startsWith('host');
-        const title = isHost ? 'Windows 宿主机 Codex' : 'WSL2 子系统 Codex';
-        const osSub = isHost ? 'Windows 本机环境 (host:windows)' : 'Linux 发行版 (' + t.target_id + ')';
-        const avatar = isHost ? '💻' : '🐧';
-        const envSessionCount = sessions.filter(s => isHost ? s.target_id.startsWith('host') : s.target_id.startsWith('wsl2')).length;
+        let title, osSub, avatar;
+        if (isAgy) {
+          title = 'Antigravity (AGY) & agy CLI';
+          osSub = isHost ? 'Windows 宿主机环境 (%USERPROFILE%\\.gemini)' : 'WSL2 Linux 环境 (' + t.target_id + ')';
+          avatar = '🚀';
+        } else {
+          title = isHost ? 'Windows 宿主机 Codex' : 'WSL2 子系统 Codex';
+          osSub = isHost ? 'Windows 本机环境 (host:windows)' : 'Linux 发行版 (' + t.target_id + ')';
+          avatar = isHost ? '💻' : '🐧';
+        }
+        const envSessionCount = sessions.filter(s => {
+          if (isAgy) return s.target_id.includes('AGY');
+          return isHost ? s.target_id.startsWith('host') && !s.target_id.includes('AGY') : s.target_id.startsWith('wsl2') && !s.target_id.includes('AGY');
+        }).length;
         const isInstalled = t.hook_configured_in_toml;
-        const stText = (t.last_self_test && t.last_self_test.passed)
-          ? '✓ 自检通过（放行正常 / 拦截高危）'
-          : '待运行自检';
+        const stText = isAgy
+          ? (isInstalled ? '✓ ProtoJSON 执行前强拦截就绪' : '待挂接原生 Hook')
+          : ((t.last_self_test && t.last_self_test.passed) ? '✓ 自检通过（放行正常 / 拦截高危）' : '待运行自检');
 
         const mainActionBtn = isInstalled
           ? `<button onclick="toggleProtection('${t.target_id}', false)" class="btn btn-danger btn-sm">关闭此环境防护</button>`
@@ -1430,7 +1442,7 @@
 
     function filterSessions(filter) {
       currentSessionFilter = filter;
-      ['all', 'host', 'wsl2'].forEach(k => {
+      ['all', 'host', 'wsl2', 'agy'].forEach(k => {
         const btn = document.getElementById('sess-filter-' + k);
         if (btn) btn.className = (k === filter) ? 'btn btn-primary btn-sm' : 'btn btn-outline btn-sm';
       });
@@ -1442,8 +1454,10 @@
       const all = cachedData.sessions || [];
       const q = (document.getElementById('sess-search').value || '').trim().toLowerCase();
       const filtered = all.filter(s => {
-        if (currentSessionFilter === 'host' && !s.target_id.startsWith('host')) return false;
-        if (currentSessionFilter === 'wsl2' && !s.target_id.startsWith('wsl2')) return false;
+        const isAgy = s.target_id.includes('AGY');
+        if (currentSessionFilter === 'agy' && !isAgy) return false;
+        if (currentSessionFilter === 'host' && (!s.target_id.startsWith('host') || isAgy)) return false;
+        if (currentSessionFilter === 'wsl2' && (!s.target_id.startsWith('wsl2') || isAgy)) return false;
         if (q) {
           const hay = ((s.title || '') + ' ' + (s.cwd || '') + ' ' + (s.session_id || '')).toLowerCase();
           if (!hay.includes(q)) return false;
@@ -1458,10 +1472,16 @@
       }
 
       container.innerHTML = filtered.map(s => {
+        const isAgy = s.target_id.includes('AGY');
         const isHost = s.target_id.startsWith('host');
-        const envBadge = isHost
-          ? '<span class="badge badge-blue">💻 Windows</span>'
-          : '<span class="badge badge-ok">🐧 WSL2</span>';
+        let envBadge;
+        if (isAgy) {
+          envBadge = '<span class="badge" style="background:#e0e7ff;color:#3730a3;font-weight:600;">🚀 AGY</span>';
+        } else if (isHost) {
+          envBadge = '<span class="badge badge-blue">💻 Win Codex</span>';
+        } else {
+          envBadge = '<span class="badge badge-ok">🐧 WSL2 Codex</span>';
+        }
         const cleanCwd = (s.cwd || '').replace(/^\\\\\?\\/, '');
         return `
           <div class="list-row">

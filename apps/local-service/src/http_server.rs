@@ -69,7 +69,11 @@ pub fn try_open_browser(url: &str) {
 
         // 若均未成功，回退到系统默认 explorer / 协议打开
         if !opened {
-            if std::process::Command::new("explorer").arg(url).spawn().is_err() {
+            if std::process::Command::new("explorer")
+                .arg(url)
+                .spawn()
+                .is_err()
+            {
                 let _ = std::process::Command::new("rundll32")
                     .args(["url.dll,FileProtocolHandler", url])
                     .spawn();
@@ -334,7 +338,12 @@ fn handle_connection(stream: &mut TcpStream, cfg: &ServeConfig) -> Result<(), St
         // 当未提供 static_dir 或指定文件不存在时，对根路径或 index.html 回退使用内置独立 HTML
         if file_rel == "index.html" {
             let hydrated = hydrate_html_with_bootstrap(EMBEDDED_INDEX_HTML, cfg);
-            return write_raw_response(stream, 200, "text/html; charset=utf-8", hydrated.as_bytes());
+            return write_raw_response(
+                stream,
+                200,
+                "text/html; charset=utf-8",
+                hydrated.as_bytes(),
+            );
         }
     }
 
@@ -684,6 +693,13 @@ fn route_api_request(
                 .or_else(|| query.get("session_id"))
                 .map(|s| s.as_str())
                 .unwrap_or("");
+
+            if tid.contains("AGY") {
+                if let Some(detail) = get_agy_session_detail(tid, sid) {
+                    return (200, json!({ "ok": true, "detail": detail }));
+                }
+            }
+
             let codex_home = crate::resolve_codex_home_for_target(tid, InstallScope::User, None);
             match get_codex_session_detail(tid, &codex_home, sid) {
                 Ok(detail) => (200, json!({ "ok": true, "detail": detail })),
@@ -767,6 +783,62 @@ fn route_api_request(
             let req: InstallApiReq = serde_json::from_slice(body).unwrap_or_default();
             let tid_raw = req.target_id.as_deref().unwrap_or("all");
             let dry_run = req.dry_run.unwrap_or(false);
+
+            if tid_raw.contains("AGY") {
+                let home = std::env::var("HOME")
+                    .or_else(|_| std::env::var("USERPROFILE"))
+                    .unwrap_or_default();
+                let hooks_path = PathBuf::from(home)
+                    .join(".gemini")
+                    .join("config")
+                    .join("hooks.json");
+                let mut root: serde_json::Map<String, Value> = if hooks_path.is_file() {
+                    let content = std::fs::read_to_string(&hooks_path).unwrap_or_default();
+                    serde_json::from_str(&content).unwrap_or_default()
+                } else {
+                    serde_json::Map::new()
+                };
+                let agy_hook_entry = json!({
+                    "enabled": true,
+                    "PreToolUse": [
+                        {
+                            "matcher": "run_command|write_file|edit_file|call_mcp_tool",
+                            "hooks": [
+                                {
+                                    "type": "command",
+                                    "command": "ai-guard hook agy pre-tool-use",
+                                    "timeout": 5
+                                }
+                            ]
+                        }
+                    ]
+                });
+                root.insert("ai-guard".to_string(), agy_hook_entry);
+                if !dry_run {
+                    if let Some(parent) = hooks_path.parent() {
+                        let _ = std::fs::create_dir_all(parent);
+                    }
+                    let _ = std::fs::write(
+                        &hooks_path,
+                        serde_json::to_string_pretty(&root).unwrap_or_default(),
+                    );
+                }
+                return (
+                    200,
+                    json!({
+                        "ok": true,
+                        "dry_run": dry_run,
+                        "reports": [{
+                            "target_id": tid_raw,
+                            "config_toml_path": hooks_path.to_string_lossy(),
+                            "unified_diff": "+ \"ai-guard\": { \"enabled\": true, ... }",
+                            "trust_guidance": "Antigravity hooks.json 增量配置成功",
+                        }],
+                        "bootstrap": build_bootstrap_json(cfg),
+                    }),
+                );
+            }
+
             let bstore = crate::resolve_backup_store(cfg.backup_dir.as_deref());
 
             let targets_to_run: Vec<String> = if tid_raw == "all" {
@@ -836,6 +908,40 @@ fn route_api_request(
             }
             let req: UninstallApiReq = serde_json::from_slice(body).unwrap_or_default();
             let tid_raw = req.target_id.as_deref().unwrap_or("all");
+
+            if tid_raw.contains("AGY") {
+                let home = std::env::var("HOME")
+                    .or_else(|_| std::env::var("USERPROFILE"))
+                    .unwrap_or_default();
+                let hooks_path = PathBuf::from(home)
+                    .join(".gemini")
+                    .join("config")
+                    .join("hooks.json");
+                if hooks_path.is_file() {
+                    let content = std::fs::read_to_string(&hooks_path).unwrap_or_default();
+                    let mut root: serde_json::Map<String, Value> =
+                        serde_json::from_str(&content).unwrap_or_default();
+                    root.remove("ai-guard");
+                    let _ = std::fs::write(
+                        &hooks_path,
+                        serde_json::to_string_pretty(&root).unwrap_or_default(),
+                    );
+                }
+                return (
+                    200,
+                    json!({
+                        "ok": true,
+                        "reports": [{
+                            "target_id": tid_raw,
+                            "config_toml_path": hooks_path.to_string_lossy(),
+                            "unified_diff": "- \"ai-guard\": { ... }",
+                            "trust_guidance": "Antigravity hooks.json 已安全移除",
+                        }],
+                        "bootstrap": build_bootstrap_json(cfg),
+                    }),
+                );
+            }
+
             let bstore = crate::resolve_backup_store(cfg.backup_dir.as_deref());
 
             let targets_to_run: Vec<String> = if tid_raw == "all" {
@@ -1012,4 +1118,114 @@ fn write_raw_response(
         .and_then(|_| stream.write_all(bytes))
         .and_then(|_| stream.flush())
         .map_err(|e| e.to_string())
+}
+
+fn get_agy_session_detail(
+    target_id: &str,
+    session_id: &str,
+) -> Option<ai_guard_session::SessionDetail> {
+    let mut candidate_dirs = Vec::new();
+
+    if let Ok(home) = std::env::var("HOME") {
+        candidate_dirs.push(
+            PathBuf::from(home)
+                .join(".gemini")
+                .join("antigravity")
+                .join("brain")
+                .join(session_id),
+        );
+    }
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(userprofile) = std::env::var("USERPROFILE") {
+            candidate_dirs.push(
+                PathBuf::from(userprofile)
+                    .join(".gemini")
+                    .join("antigravity")
+                    .join("brain")
+                    .join(session_id),
+            );
+        }
+        for distro in ["Ubuntu-24.04", "Ubuntu"] {
+            candidate_dirs.push(PathBuf::from(format!(
+                r"\\wsl.localhost\{distro}\home\ai-li\.gemini\antigravity\brain\{session_id}"
+            )));
+        }
+    }
+
+    let found_dir = candidate_dirs.into_iter().find(|p| p.is_dir())?;
+    let transcript_path = found_dir
+        .join(".system_generated")
+        .join("logs")
+        .join("transcript.jsonl");
+
+    let mut turns_count = 0;
+    let mut rollout_events_count = 0;
+    let mut title = format!("AGY 会话 {}", &session_id[..8.min(session_id.len())]);
+    let mut preview_lines = Vec::new();
+
+    if transcript_path.is_file() {
+        if let Ok(file) = std::fs::File::open(&transcript_path) {
+            use std::io::BufRead;
+            let reader = std::io::BufReader::new(file);
+            for line in reader.lines().map_while(Result::ok) {
+                rollout_events_count += 1;
+                if let Ok(val) = serde_json::from_str::<Value>(&line) {
+                    let step_type = val.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                    if step_type == "USER_INPUT" {
+                        turns_count += 1;
+                        if let Some(content) = val.get("content").and_then(|v| v.as_str()) {
+                            let cleaned = content
+                                .replace("<USER_REQUEST>", "")
+                                .replace("</USER_REQUEST>", "");
+                            let trimmed = cleaned.trim();
+                            if preview_lines.len() < 3 {
+                                preview_lines.push(format!(
+                                    "用户: {}",
+                                    trimmed.lines().next().unwrap_or("")
+                                ));
+                            }
+                            if title.starts_with("AGY 会话") {
+                                if let Some(first_line) = trimmed.lines().next() {
+                                    let clean_line = first_line.trim_start_matches('#').trim();
+                                    if !clean_line.is_empty() {
+                                        title = clean_line.chars().take(60).collect();
+                                    }
+                                }
+                            }
+                        }
+                    } else if step_type == "PLANNER_RESPONSE" && preview_lines.len() < 5 {
+                        if let Some(content) = val.get("content").and_then(|v| v.as_str()) {
+                            let trimmed = content.trim();
+                            if !trimmed.is_empty() {
+                                preview_lines.push(format!(
+                                    "助手: {}",
+                                    trimmed.lines().next().unwrap_or("")
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let summary = ai_guard_session::SessionSummary {
+        session_id: session_id.to_string(),
+        target_id: target_id.to_string(),
+        title: redact_secrets(&title),
+        cwd: "/home/ai-li/codes/ai-guard".to_string(),
+        updated_at: "2026-11-07 18:00:00".to_string(),
+        model: Some("auto (Antigravity)".to_string()),
+        rollout_file_exists: transcript_path.is_file(),
+        source_files: vec![found_dir.to_string_lossy().to_string()],
+    };
+
+    Some(ai_guard_session::SessionDetail {
+        summary,
+        turns_count,
+        rollout_events_count,
+        rollout_path: Some(transcript_path.to_string_lossy().to_string()),
+        redacted_preview: Some(redact_secrets(&preview_lines.join("\n"))),
+    })
 }

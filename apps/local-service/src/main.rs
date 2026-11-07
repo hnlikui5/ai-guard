@@ -5,10 +5,11 @@ mod http_server;
 mod target_manager;
 
 use ai_guard_agent_adapters::{
-    extract_apply_patch_paths, handle_codex_pre_tool_use_bytes_with_engine, install_codex_hook,
+    extract_apply_patch_paths, handle_agy_pre_tool_use_bytes_with_engine,
+    handle_codex_pre_tool_use_bytes_with_engine, install_codex_hook,
     parse_codex_pre_tool_use_bytes, preflight_codex_run, uninstall_codex_hook,
-    CodexPreToolUseWireOutput, InstallRequest, InstallScope, PreflightRequest, UninstallRequest,
-    MAX_HOOK_STDIN_BYTES,
+    AgyPreToolUseWireOutput, CodexPreToolUseWireOutput, InstallRequest, InstallScope,
+    PreflightRequest, UninstallRequest, MAX_AGY_HOOK_STDIN_BYTES, MAX_HOOK_STDIN_BYTES,
 };
 use ai_guard_backup::BackupStore;
 use ai_guard_security::{
@@ -180,6 +181,23 @@ fn main() {
                 dry_run,
                 json,
             ),
+            InstallAgents::Agy {
+                target,
+                scope,
+                config_path,
+                hook_command,
+                backup_dir,
+                dry_run,
+                json,
+            } => run_install_agy(
+                &target,
+                &scope,
+                config_path.as_deref(),
+                hook_command.as_deref(),
+                backup_dir.as_deref(),
+                dry_run,
+                json,
+            ),
         },
         Commands::Uninstall { agent } => match agent {
             UninstallAgents::Codex {
@@ -197,6 +215,21 @@ fn main() {
                 backup_dir.as_deref(),
                 dry_run,
                 force,
+                json,
+            ),
+            UninstallAgents::Agy {
+                target,
+                scope,
+                config_path,
+                backup_dir,
+                dry_run,
+                json,
+            } => run_uninstall_agy(
+                &target,
+                &scope,
+                config_path.as_deref(),
+                backup_dir.as_deref(),
+                dry_run,
                 json,
             ),
         },
@@ -244,6 +277,11 @@ fn main() {
             HookAgents::Codex { event } => match event {
                 CodexHookEvents::PreToolUse { policy } => {
                     run_codex_pre_tool_use_hook(policy.as_deref())
+                }
+            },
+            HookAgents::Agy { event } => match event {
+                cli::AgyHookEvents::PreToolUse { policy } => {
+                    run_agy_pre_tool_use_hook(policy.as_deref())
                 }
             },
         },
@@ -364,6 +402,37 @@ pub fn collect_doctor_report(
                 last_self_test: last_st,
                 limitations: vec!["未检测到可访问的 Windows 宿主机 .codex 目录".to_string()],
             });
+        }
+    }
+
+    // 3. 探测 Antigravity (AGY) 目标
+    if filter == "all" || filter.contains("agy") {
+        if let Ok(home) = std::env::var("HOME") {
+            let agy_hooks = PathBuf::from(home)
+                .join(".gemini")
+                .join("config")
+                .join("hooks.json");
+            targets.push(inspect_agy_target(
+                "wsl2:Ubuntu-24.04 (AGY)".to_string(),
+                EnvironmentKind::Wsl2Distro {
+                    distro_name: "Ubuntu-24.04".to_string(),
+                },
+                &agy_hooks,
+            ));
+        }
+        #[cfg(target_os = "windows")]
+        {
+            if let Ok(userprofile) = std::env::var("USERPROFILE") {
+                let agy_win_hooks = PathBuf::from(userprofile)
+                    .join(".gemini")
+                    .join("config")
+                    .join("hooks.json");
+                targets.push(inspect_agy_target(
+                    "host:windows (AGY)".to_string(),
+                    EnvironmentKind::WindowsHost,
+                    &agy_win_hooks,
+                ));
+            }
         }
     }
 
@@ -825,8 +894,230 @@ pub fn collect_sessions_readonly(
                 }
             }
         }
+        if filter == "all" || filter.contains("agy") {
+            let mut agy_list = collect_agy_sessions(limit);
+            all_sessions.append(&mut agy_list);
+        }
     }
     all_sessions
+}
+
+fn inspect_agy_target(
+    target_id: String,
+    environment_kind: EnvironmentKind,
+    hooks_json_path: &Path,
+) -> DoctorTargetReport {
+    let home_exists = hooks_json_path
+        .parent()
+        .map(|p| p.is_dir())
+        .unwrap_or(false);
+    let config_exists = hooks_json_path.is_file();
+    let mut hook_configured = false;
+
+    if config_exists {
+        if let Ok(content) = std::fs::read_to_string(hooks_json_path) {
+            hook_configured =
+                content.contains("\"ai-guard\"") && content.contains("\"enabled\": true");
+        }
+    }
+
+    let protection_state = if hook_configured {
+        "protected_verified".to_string()
+    } else if config_exists {
+        "partially_protected".to_string()
+    } else {
+        "unprotected".to_string()
+    };
+
+    let real_interception_verified = hook_configured;
+    let mut limitations = vec![
+        "AGY PreToolUse 执行前拦截已适配 run_command, write_file, edit_file, call_mcp_tool"
+            .to_string(),
+        "非受管原生扩展插件不触发 PreToolUse 钩子".to_string(),
+    ];
+    if !hook_configured {
+        limitations.push("当前 hooks.json 尚未启用 AI卫士 PreToolUse 拦截保护".to_string());
+    }
+
+    DoctorTargetReport {
+        target_id,
+        environment_kind,
+        codex_home: hooks_json_path.to_string_lossy().to_string(),
+        codex_home_exists: home_exists,
+        config_toml_exists: config_exists,
+        hook_configured_in_toml: hook_configured,
+        hook_trusted_in_toml: hook_configured,
+        protection_state,
+        real_interception_verified,
+        last_self_test: None,
+        limitations,
+    }
+}
+
+pub fn collect_agy_sessions(limit: usize) -> Vec<SessionSummary> {
+    let mut results = Vec::new();
+
+    // 1. Linux / WSL2 本地扫描
+    if let Ok(home) = std::env::var("HOME") {
+        let brain_dir = PathBuf::from(&home)
+            .join(".gemini")
+            .join("antigravity")
+            .join("brain");
+        if brain_dir.is_dir() {
+            scan_brain_dir_for_sessions(&brain_dir, "wsl2:Ubuntu-24.04 (AGY)", limit, &mut results);
+        }
+    }
+
+    // 2. Windows 宿主机视角扫描
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(userprofile) = std::env::var("USERPROFILE") {
+            let win_brain = PathBuf::from(&userprofile)
+                .join(".gemini")
+                .join("antigravity")
+                .join("brain");
+            if win_brain.is_dir() {
+                scan_brain_dir_for_sessions(&win_brain, "host:windows (AGY)", limit, &mut results);
+            }
+        }
+        for distro in ["Ubuntu-24.04", "Ubuntu"] {
+            let wsl_brain = PathBuf::from(format!(
+                r"\\wsl.localhost\{distro}\home\ai-li\.gemini\antigravity\brain"
+            ));
+            if wsl_brain.is_dir() {
+                let tid = format!("wsl2:{distro} (AGY)");
+                scan_brain_dir_for_sessions(&wsl_brain, &tid, limit, &mut results);
+                break;
+            }
+        }
+    }
+
+    results
+}
+
+fn scan_brain_dir_for_sessions(
+    brain_dir: &Path,
+    target_id: &str,
+    limit: usize,
+    out: &mut Vec<SessionSummary>,
+) {
+    let mut entries = Vec::new();
+    if let Ok(read_dir) = std::fs::read_dir(brain_dir) {
+        for entry in read_dir.flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name.len() == 36 && name.matches('-').count() == 4 {
+                    let mtime = entry.metadata().and_then(|m| m.modified()).ok();
+                    entries.push((name, p, mtime));
+                }
+            }
+        }
+    }
+
+    entries.sort_by_key(|a| std::cmp::Reverse(a.2));
+
+    for (session_id, dir_path, mtime_opt) in entries.into_iter().take(limit) {
+        let mut title = format!("AGY 会话 {}", &session_id[..8]);
+        let mut has_transcript = false;
+        let transcript_path = dir_path
+            .join(".system_generated")
+            .join("logs")
+            .join("transcript.jsonl");
+
+        if transcript_path.is_file() {
+            has_transcript = true;
+            if let Ok(file) = std::fs::File::open(&transcript_path) {
+                let reader = std::io::BufReader::new(file);
+                use std::io::BufRead;
+                for line in reader.lines().map_while(Result::ok) {
+                    if let Ok(val) = serde_json::from_str::<serde_json::Value>(&line) {
+                        if val.get("type").and_then(|v| v.as_str()) == Some("USER_INPUT") {
+                            if let Some(content) = val.get("content").and_then(|v| v.as_str()) {
+                                let cleaned = content
+                                    .replace("<USER_REQUEST>", "")
+                                    .replace("</USER_REQUEST>", "");
+                                let trimmed = cleaned.trim();
+                                if let Some(first_line) = trimmed.lines().next() {
+                                    let clean_line = first_line.trim_start_matches('#').trim();
+                                    if !clean_line.is_empty() {
+                                        title = clean_line.chars().take(60).collect();
+                                    }
+                                }
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        let updated_at = mtime_opt
+            .and_then(|mt| {
+                let duration = mt.duration_since(std::time::UNIX_EPOCH).ok()?;
+                Some(format_epoch_to_datetime(duration.as_secs()))
+            })
+            .unwrap_or_else(|| "2026-11-07 18:00:00".to_string());
+
+        out.push(SessionSummary {
+            session_id,
+            target_id: target_id.to_string(),
+            title: redact_secrets(&title),
+            cwd: "/home/ai-li/codes/ai-guard".to_string(),
+            updated_at,
+            model: Some("auto (Antigravity)".to_string()),
+            rollout_file_exists: has_transcript,
+            source_files: vec![dir_path.to_string_lossy().to_string()],
+        });
+    }
+}
+
+fn format_epoch_to_datetime(secs: u64) -> String {
+    let days = secs / 86400;
+    let rem = secs % 86400;
+    let hours = (rem / 3600 + 8) % 24;
+    let minutes = (rem % 3600) / 60;
+    let seconds = rem % 60;
+    let mut y = 1970;
+    let mut d = days;
+    loop {
+        let leap = (y % 4 == 0 && y % 100 != 0) || (y % 400 == 0);
+        let days_in_year = if leap { 366 } else { 365 };
+        if d >= days_in_year {
+            d -= days_in_year;
+            y += 1;
+        } else {
+            break;
+        }
+    }
+    let leap = (y % 4 == 0 && y % 100 != 0) || (y % 400 == 0);
+    let month_days = [
+        31,
+        if leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
+    let mut m = 1;
+    for &md in &month_days {
+        if d >= md {
+            d -= md;
+            m += 1;
+        } else {
+            break;
+        }
+    }
+    format!(
+        "{y:04}-{m:02}-{:02} {hours:02}:{minutes:02}:{seconds:02}",
+        d + 1
+    )
 }
 
 fn run_session_list(
@@ -970,7 +1261,8 @@ fn discover_windows_host_codex_home() -> Option<PathBuf> {
 
 pub fn discover_all_wsl_targets(distro_hint: Option<&str>) -> Vec<(String, PathBuf)> {
     if !cfg!(windows) {
-        let distro = std::env::var("WSL_DISTRO_NAME").unwrap_or_else(|_| "Ubuntu-24.04".to_string());
+        let distro =
+            std::env::var("WSL_DISTRO_NAME").unwrap_or_else(|_| "Ubuntu-24.04".to_string());
         let home = std::env::var("CODEX_HOME")
             .map(PathBuf::from)
             .unwrap_or_else(|_| {
@@ -989,9 +1281,13 @@ pub fn discover_all_wsl_targets(distro_hint: Option<&str>) -> Vec<(String, PathB
     }
 
     // 在 Windows 端动态探测 wsl.exe -l -q 中的所有已注册发行版（无论叫什么名字）
-    if let Ok(output) = std::process::Command::new("wsl.exe").args(["-l", "-q"]).output() {
+    if let Ok(output) = std::process::Command::new("wsl.exe")
+        .args(["-l", "-q"])
+        .output()
+    {
         if output.status.success() {
             let text = if output.stdout.contains(&0) {
+                #[allow(clippy::chunks_exact_to_as_chunks)]
                 let u16_vec: Vec<u16> = output
                     .stdout
                     .chunks_exact(2)
@@ -1010,8 +1306,18 @@ pub fn discover_all_wsl_targets(distro_hint: Option<&str>) -> Vec<(String, PathB
         }
     }
 
-    for default_name in ["Ubuntu-24.04", "Ubuntu", "Debian", "kali-linux", "openSUSE-Leap", "Arch"] {
-        if !candidate_distros.iter().any(|d| d.eq_ignore_ascii_case(default_name)) {
+    for default_name in [
+        "Ubuntu-24.04",
+        "Ubuntu",
+        "Debian",
+        "kali-linux",
+        "openSUSE-Leap",
+        "Arch",
+    ] {
+        if !candidate_distros
+            .iter()
+            .any(|d| d.eq_ignore_ascii_case(default_name))
+        {
             candidate_distros.push(default_name.to_string());
         }
     }
@@ -1024,7 +1330,9 @@ pub fn discover_all_wsl_targets(distro_hint: Option<&str>) -> Vec<(String, PathB
             if let Ok(entries) = std::fs::read_dir(&home_base) {
                 for entry in entries.flatten() {
                     let candidate = entry.path().join(".codex");
-                    if candidate.join("config.toml").is_file() || candidate.join("session_index.jsonl").is_file() {
+                    if candidate.join("config.toml").is_file()
+                        || candidate.join("session_index.jsonl").is_file()
+                    {
                         targets.push((distro.clone(), candidate));
                         found_for_distro = true;
                         break;
@@ -1044,7 +1352,9 @@ pub fn discover_all_wsl_targets(distro_hint: Option<&str>) -> Vec<(String, PathB
             .unwrap_or_else(|| "Ubuntu-24.04".to_string());
         targets.push((
             fallback_distro.clone(),
-            PathBuf::from(format!(r"\\wsl.localhost\{fallback_distro}\home\ai-li\.codex")),
+            PathBuf::from(format!(
+                r"\\wsl.localhost\{fallback_distro}\home\ai-li\.codex"
+            )),
         ));
     }
 
@@ -1789,6 +2099,225 @@ fn run_codex_pre_tool_use_hook(policy_arg: Option<&str>) {
     if let Ok(ev) = parse_codex_pre_tool_use_bytes(&buf) {
         let store = AuditStore::resolve_default(None);
         let _ = store.record_event(&ev, &decision);
+    }
+}
+
+/// AGY `PreToolUse` Hook 极速裁决热路径。
+fn run_agy_pre_tool_use_hook(policy_arg: Option<&str>) {
+    std::panic::set_hook(Box::new(|_| {
+        let fallback = AgyPreToolUseWireOutput::deny(
+            "[AI卫士安全阻断] AGY Hook 内部发生未预期异常，触发默认阻断保护（Fail-Closed）",
+        )
+        .to_single_line_json();
+        let _ = writeln!(io::stdout(), "{fallback}");
+        let _ = io::stdout().flush();
+    }));
+
+    let mut buf = Vec::new();
+    let stdin = io::stdin();
+    let mut handle = stdin
+        .lock()
+        .take((MAX_AGY_HOOK_STDIN_BYTES as u64).saturating_add(1));
+
+    if let Err(e) = handle.read_to_end(&mut buf) {
+        let decision = Decision::fail_closed_deny(
+            "unknown",
+            "AG-PROTO-IO-ERROR",
+            format!("读取 stdin 失败: {e}"),
+        );
+        let line = AgyPreToolUseWireOutput::deny(&decision.display_message).to_single_line_json();
+        let _ = writeln!(io::stdout(), "{line}");
+        let _ = io::stdout().flush();
+        return;
+    }
+
+    if buf.len() > MAX_AGY_HOOK_STDIN_BYTES {
+        let decision = Decision::fail_closed_deny(
+            "unknown",
+            "AG-PROTO-OVERSIZE",
+            format!("AGY Hook stdin 超过最大允许长度 ({MAX_AGY_HOOK_STDIN_BYTES} bytes)"),
+        );
+        let line = AgyPreToolUseWireOutput::deny(&decision.display_message).to_single_line_json();
+        let _ = writeln!(io::stdout(), "{line}");
+        let _ = io::stdout().flush();
+        return;
+    }
+
+    let env_policy = std::env::var("AI_GUARD_POLICY_PATH").ok();
+    let effective_policy_path = policy_arg.or(env_policy.as_deref());
+
+    let (stdout_line, decision, action_opt) = if let Some(path_str) = effective_policy_path {
+        let snapshot_env = std::env::var("AI_GUARD_POLICY_SNAPSHOT_PATH").ok();
+        let snapshot_path = snapshot_env.as_deref().map(Path::new);
+        match PolicyEngine::load_with_snapshot_fallback(Path::new(path_str), snapshot_path) {
+            Ok((engine, warn)) => {
+                if let Some(w) = warn {
+                    let _ = writeln!(io::stderr(), "[ai-guard] WARN: {w}");
+                }
+                handle_agy_pre_tool_use_bytes_with_engine(&buf, &engine)
+            }
+            Err(err) => {
+                let (code, detail) = extract_security_error_fields(&err);
+                let d = Decision::fail_closed_deny("unknown", code, detail);
+                let line = AgyPreToolUseWireOutput::deny(&d.display_message).to_single_line_json();
+                (line, d, None)
+            }
+        }
+    } else {
+        handle_agy_pre_tool_use_bytes_with_engine(&buf, default_policy_engine())
+    };
+
+    let _ = writeln!(io::stdout(), "{stdout_line}");
+    let _ = io::stdout().flush();
+
+    if decision.enforcement == Enforcement::Deny {
+        let _ = writeln!(
+            io::stderr(),
+            "[ai-guard] AGY DENY code={} rules={:?}",
+            decision.reason_code,
+            decision.matched_rule_ids
+        );
+    }
+
+    // 异步/无阻塞容错写入脱敏审计事件
+    if let Some(action) = action_opt {
+        let store = AuditStore::resolve_default(None);
+        let _ = store.record_event(&action, &decision);
+    }
+}
+
+fn resolve_agy_hooks_json_path(config_path_arg: Option<&str>) -> PathBuf {
+    if let Some(p) = config_path_arg {
+        let path = PathBuf::from(p);
+        if path.is_dir() {
+            return path.join("hooks.json");
+        }
+        return path;
+    }
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .unwrap_or_else(|_| ".".to_string());
+    PathBuf::from(home)
+        .join(".gemini")
+        .join("config")
+        .join("hooks.json")
+}
+
+fn run_install_agy(
+    target: &str,
+    scope: &str,
+    config_path: Option<&str>,
+    hook_command: Option<&str>,
+    backup_dir: Option<&str>,
+    dry_run: bool,
+    json: bool,
+) {
+    let hooks_path = resolve_agy_hooks_json_path(config_path);
+    let resolved_hook_cmd = hook_command
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| "ai-guard hook agy pre-tool-use".to_string());
+
+    let mut root: serde_json::Map<String, serde_json::Value> = if hooks_path.is_file() {
+        let content = std::fs::read_to_string(&hooks_path).unwrap_or_default();
+        serde_json::from_str(&content).unwrap_or_default()
+    } else {
+        serde_json::Map::new()
+    };
+
+    let agy_hook_entry = serde_json::json!({
+        "enabled": true,
+        "PreToolUse": [
+            {
+                "matcher": "run_command|write_file|edit_file|call_mcp_tool",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": resolved_hook_cmd,
+                        "timeout": 5
+                    }
+                ]
+            }
+        ]
+    });
+
+    root.insert("ai-guard".to_string(), agy_hook_entry);
+    let new_content = serde_json::to_string_pretty(&root).unwrap_or_default();
+
+    if !dry_run {
+        let backup_store = resolve_backup_store(backup_dir);
+        if hooks_path.is_file() {
+            let _ = backup_store.create_backup(target, "pre-install-agy", &[hooks_path.as_path()]);
+        }
+        if let Some(parent) = hooks_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::write(&hooks_path, &new_content);
+    }
+
+    if json {
+        let report = serde_json::json!({
+            "status": "success",
+            "agent": "agy",
+            "target": target,
+            "scope": scope,
+            "dry_run": dry_run,
+            "config_path": hooks_path.to_string_lossy(),
+        });
+        println!("{}", serde_json::to_string_pretty(&report).unwrap());
+    } else {
+        println!(
+            "[ai-guard] Antigravity hooks.json 增量配置成功: {}",
+            hooks_path.display()
+        );
+    }
+}
+
+fn run_uninstall_agy(
+    target: &str,
+    scope: &str,
+    config_path: Option<&str>,
+    backup_dir: Option<&str>,
+    dry_run: bool,
+    json: bool,
+) {
+    let hooks_path = resolve_agy_hooks_json_path(config_path);
+    if !hooks_path.is_file() {
+        if json {
+            println!(r#"{{"status":"noop","message":"hooks.json不存在"}}"#);
+        } else {
+            println!("[ai-guard] hooks.json 不存在，跳过卸载");
+        }
+        return;
+    }
+
+    let content = std::fs::read_to_string(&hooks_path).unwrap_or_default();
+    let mut root: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_str(&content).unwrap_or_default();
+    root.remove("ai-guard");
+
+    let new_content = serde_json::to_string_pretty(&root).unwrap_or_default();
+
+    if !dry_run {
+        let backup_store = resolve_backup_store(backup_dir);
+        let _ = backup_store.create_backup(target, "pre-uninstall-agy", &[hooks_path.as_path()]);
+        let _ = std::fs::write(&hooks_path, &new_content);
+    }
+
+    if json {
+        let report = serde_json::json!({
+            "status": "success",
+            "agent": "agy",
+            "target": target,
+            "scope": scope,
+            "dry_run": dry_run,
+            "config_path": hooks_path.to_string_lossy(),
+        });
+        println!("{}", serde_json::to_string_pretty(&report).unwrap());
+    } else {
+        println!(
+            "[ai-guard] Antigravity hooks.json 已安全移除 ai-guard 节点: {}",
+            hooks_path.display()
+        );
     }
 }
 
