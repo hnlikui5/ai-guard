@@ -18,7 +18,7 @@
 ## 2. 产品架构不可变原则
 
 - **AI卫士是安全工具，不是先做 Session 浏览器。** Hook 安全接入优先于 Codex App Server/Session 备份。
-- Rust 作为 WSL2 执行侧的核心；Windows Tauri 只是管理 UI。
+- **Windows 宿主机是主控中心（Host-Centric），同时纳管宿主机 Codex 与 WSL2 Codex**：同一套 Rust 核心代码编译出宿主机 `ai-guard.exe`（管理并就地拦截宿主机 `C:\Users\<User>\.codex`）与 WSL2 `ai-guard-linux`（由宿主机分发至 WSL2 内就地拦截 `/home/<user>/.codex`，并汇总回宿主机展示）。
 - Hook 单次调用可独立完成策略判定，不依赖后台 Daemon 和网络。
 - 不把观察、Hook Deny、OS 强制隔离混为一谈；不制造虚假的“已受保护”状态。
 - 默认不上传 Prompt、源码、完整 Shell 命令或 Session；默认本地运行。

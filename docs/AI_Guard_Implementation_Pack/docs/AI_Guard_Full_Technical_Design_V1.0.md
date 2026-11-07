@@ -59,11 +59,11 @@
 | ADR | 决策 | 理由 | 何时重新评估 |
 |---|---|---|---|
 | ADR-001 | 安全主线优先于 Session 管理 | 防护是产品核心差异点 | 真实拦截闭环完成后 |
-| ADR-002 | Rust 模块化单体 + 小型 Hook Runner | 热路径可靠、可测试、交付简单 | 跨 Agent 规模显著扩大时 |
-| ADR-003 | 在 Codex 实际执行环境安装 Hook（先 WSL2） | Windows UI 无法凭空拦截 WSL Linux 进程 | Windows 原生 Codex 单独支持时 |
+| ADR-002 | 跨平台 Rust 模块化单体（同源编译 Windows `.exe` 与 Linux 探针） | 热路径可靠、可测试、双环境交付一致 | 跨 Agent 规模显著扩大时 |
+| ADR-003 | Windows 宿主机中心化主控 + 宿主机/WSL2 双环境就地挂载 Hook | 桌面程序运行在宿主机，同时纳管宿主机 Codex（`C:\Users\<User>\.codex`）与 WSL2 Codex（`/home/<user>/.codex`） | 扩展 macOS/纯 Linux 桌面时 |
 | ADR-004 | Hook 判定不依赖常驻 Daemon | UI 关闭/服务重启仍可完成本地判定 | 引入企业强制审批时 |
-| ADR-005 | 个人版 SQLite + TOML/JSON 策略文件 | 离线、调试简单、审计可查询 | 高并发/多用户时 |
-| ADR-006 | Windows Tauri UI 用受限 `wsl.exe --exec` 命令桥接 | 避免首版裸露本地 HTTP 服务 | 实时订阅需求成熟时 |
+| ADR-005 | 宿主机 SQLite 主库 + WSL2 缓冲同步 + TOML 策略镜像 | 离线可用、宿主机统一展示、不跨 9P 直接锁 SQLite | 高并发/多用户时 |
+| ADR-006 | 宿主机 `TargetManager`（本机直连 + WSL2 受限 `wsl.exe --exec` 桥接） | 未启动 WSL2 时宿主机独立可用；启动 WSL2 时安全汇总 | 实时订阅需求成熟时 |
 | ADR-007 | 安全策略确定性执行，规则与风险解释可重放 | 便于自动测试和审计 | 模型辅助检测以非强制路径接入时 |
 | ADR-008 | 非可信项目 Hook 不自动获得信任 | 尊重 Codex 原生信任模型 | 管理员托管策略明确时 |
 | ADR-009 | 参考 HOL Guard/nono，但不继承其整体工程 | 独立产品、许可证可核查、降低架构绑定 | 成熟模块复用收益明显时 |

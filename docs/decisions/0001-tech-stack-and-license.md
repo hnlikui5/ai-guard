@@ -25,9 +25,9 @@ AI卫士（AI Guard）定位为本地优先的 AI 编程 Agent 安全与运行�
    - 通过 Cargo Workspace 统一组织 `apps/local-service`、`packages/agent-adapters`、`packages/security`、`packages/session`、`packages/backup`、`packages/storage`。
    - 对既有 M1 阶段（Codex Session 管理）成果，若原实现为其他语言（如 Python/TypeScript），在迁移阶段重点复用其业务模型、解析规则与测试用例，并按需收敛为 Rust 实现或通过明确进程间契约衔接。
 3. **本地持久化层（`packages/storage`）**：采用 **SQLite（开启 WAL 模式 + FTS5 全文检索）+ 本地受控文件系统**。
-4. **Windows + WSL2 跨边界架构**：
-   - `apps/local-service` 原生运行于 Codex 所在的 WSL2 Ubuntu 环境内，直接访问 Linux 文件系统与 Codex App Server。
-   - Windows 宿主机桌面端通过受控本地回路（`127.0.0.1` + 鉴权 Token）或 WSL 标准通道与本地服务通信，避免跨 9P 文件系统直接操作 SQLite。
+   - 宿主机 `%LOCALAPPDATA%\ai-guard\events.db` 作为全局统一真相库，同时汇聚宿主机与 WSL2 子环境的审计与状态记录。
+4. **Windows 宿主机主控 + 宿主机/WSL2 双环境协同架构（详见 `ADR-0003`）**：
+   - AI卫士主程序与核心控制服务运行于 Windows 宿主机；同一套 Rust 核心代码编译出宿主机 `ai-guard.exe`（管理并拦截宿主机 `C:\Users\<User>\.codex`）与 WSL2 Linux 探针 `ai-guard-linux`（由宿主机分发至 WSL2 内就地拦截 `/home/<user>/.codex`，并通过受控 `wsl.exe --exec` 同步策略与汇总审计）。
 
 ### 2.2 开源许可证定型
 
